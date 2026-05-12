@@ -1,0 +1,17 @@
+{
+	"name": "cont-improv-workflow",
+	"displayName": "Continuous Improvement Workflow",
+	"version": "1.0.0",
+	"description": "Production-quality workflow defaults: coding conventions, pre-push code review, and parallel delivery planning.",
+	"license": "MIT",
+	"keywords": [
+		"continuous-improvement",
+		"coding-conventions",
+		"code-review",
+		"parallel-planning",
+		"cursor"
+	],
+	"author": {
+		"name": "Cursor Field Engineering"
+	}
+}
