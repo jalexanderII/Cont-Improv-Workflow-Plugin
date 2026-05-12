@@ -1,40 +1,20 @@
 {
-  "name": "cursor-fundamentals",
-  "displayName": "Cursor Fundamentals",
-  "owner": {
-    "name": "Cursor Team",
-    "email": "hi@cursor.com"
-  },
-  "metadata": {
-    "description": "A focused Team Marketplace: starter engineering defaults, product management, design, technical writing, and testing.",
-    "version": "0.2.0",
-    "pluginRoot": "plugins"
-  },
-  "plugins": [
-    {
-      "name": "cursor-starter-pack",
-      "source": "cursor-starter-pack",
-      "description": "Engineering baseline: code quality, system design, onboarding, commits, git hygiene, planning, naming, and review agents"
-    },
-    {
-      "name": "product-management",
-      "source": "product-management",
-      "description": "Backlog and delivery: implementation-ready tickets, board summaries, devil's advocate planning critique, optional tracker MCP integration"
-    },
-    {
-      "name": "design",
-      "source": "design",
-      "description": "UI/UX workflows: wireframes, mockups, designer and ui-engineer agents, Figma MCP"
-    },
-    {
-      "name": "technical-writing",
-      "source": "technical-writing",
-      "description": "Long-form docs and README workflows: README updates, weekly reviews, README hygiene, docs writer, optional Notion MCP"
-    },
-    {
-      "name": "testing",
-      "source": "testing",
-      "description": "Test authoring and execution: unit, E2E, and browser automation skills plus test engineer and test runner agents"
-    }
-  ]
+	"name": "cont-improv-workflow",
+	"displayName": "Continuous Improvement Workflow",
+	"owner": {
+		"name": "Cursor Field Engineering",
+		"email": "hi@cursor.com"
+	},
+	"metadata": {
+		"description": "A focused Cursor marketplace for production-quality coding conventions, pre-push review, and parallel delivery planning.",
+		"version": "1.0.0",
+		"pluginRoot": "plugins"
+	},
+	"plugins": [
+		{
+			"name": "cont-improv-workflow",
+			"source": "cont-improv-workflow",
+			"description": "Continuous improvement workflow: coding conventions, production-quality pre-push review, and parallel delivery planning"
+		}
+	]
 }
