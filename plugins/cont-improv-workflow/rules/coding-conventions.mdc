@@ -4,339 +4,70 @@ alwaysApply: true
 
 # Coding Conventions
 
+Stack-agnostic engineering conventions. Adapt tool names (linter, type checker, test runner) to your project; the principles apply everywhere.
+
 ## Purpose
 
-We aim to build software we are proud of. Every line reflects clarity over cleverness, correctness over convenience, and craftsmanship over speed.
+Build software you are proud of: clarity over cleverness, correctness over convenience, craftsmanship over speed.
 
-Use this document as the single source of truth for how we design, implement, and review code in this repo. Note writing code consider how can I ensure that bad habits "CAN'T" be done in the future. I.e how does code architecute, and system design help enable correctness by default. Ask yourself if i internalize thse books: Clean Code by Robert C. Martin, The Pragmatic Programmer by Hunt & Thomas, and Refactoring by Martin Fowler how would i my task. 
+Think at the level of the system, not the line in front of you. Before writing code, understand how the surface you are touching actually works, name the invariants that must hold, and design so the structure of the code makes correctness the default — enforced in one place rather than re-checked at every call site.
 
-## CRITICAL: Collaboration guardrails
+## Collaboration guardrails
 
-- **THE USER WILL GET VERY ANGRY IF YOU ADD USELESS TESTS** Only add unit tests when 100% critical. Avoid test bloat.
+- **Expect concurrent edits.** Teammates may change files while you work. Only pause on direct conflicts with the exact code you are editing.
+- **Never delete files or components you did not create in this task.** Apparently unused code may be someone else's in-progress work. If it surfaces a type error, fix the error only.
+- **Scope dead-code deletion to your own changes.** Delete code your task made dead; do not delete pre-existing code that merely looks unused. If in doubt, ask first.
 
-- **Expect concurrent edits.** Other teammates may change files while you work. Do not stop solely because the worktree changed; only pause when there is a direct conflict with the exact code being edited.
-- **Never delete files or components you did not create in this task.** A component that appears "unused" from your search may be another teammate's in-progress work, registered but not yet wired up. If you find an exported component with zero current import sites, leave it alone. If it surfaces a `tsc` error, fix the type error only — do not delete the file. Deletion of someone else's component is data loss, not cleanup.
-- **Scope "dead code" deletion to your own changes.** The anti-laziness rule ("dead code is a bug") applies to code *your task* made dead — a function you stopped calling, a field you removed, an import you orphaned. It does not authorize deleting pre-existing files, components, or exports that were already in the repo before your task started, even if they look unused. If in doubt, ASK FIRST.
-- **Git commands are opt-in.** Do not run git commands unless the user explicitly asks for them.
+## Production-ready gate
 
-
-## Mission and mindset
-
-**Our commitment:**
-
-- We build a keyboard-forward application: users should not need the mouse. Think Linear.
-- We prefer calm, low-chrome UI. Think Linear: simple design, strong hierarchy, no bloat.
-- We do not ship code we would not want to maintain.
-- We treat warnings and errors as teachers, not obstacles.
-- We ask "why is this wrong?" before "how do I make it pass?"
-- We choose the right solution over the fast solution.
-- We leave the codebase better than we found it.
-- In documentation and comments, every word earns its place. If you can remove it and still understand, remove it.
-- Keyboard-visible selection must have semantic backing. If j/k, arrows, or jump shortcuts change a selected item, move DOM focus or expose an equivalent accessible selection state; a ring that only sighted users can perceive is incomplete.
-
-When you are tempted to take a shortcut, pause. The extra 10 minutes spent doing it right saves hours of debugging and prevents user-facing bugs.
-
-## Production-ready implementation gate
-
-Every implementation is production-bound. Treat the next step as "this may be pushed to production" by default.
-
-Do not finish with code you already know should be improved before a senior engineer would be proud to own it. Passing lint, type-checking, tests, and pre-push review is necessary but not sufficient.
-
-Before declaring work complete, ask:
+Every implementation is production-bound by default. Passing lint, types, and tests is necessary but not sufficient. Before declaring work complete, ask:
 
 - Is the design clear, cohesive, and appropriately simple?
-- Are responsibilities in the right place?
-- Are important invariants named and enforced by the structure of the code?
+- Are responsibilities in the right place, and invariants enforced by structure?
 - Would this be easy to extend safely six months from now?
-- Does the code make bad future changes hard and good future changes natural?
-- If I had to defend this in a rigorous production review, would I be proud of it?
+- Would I defend this in a rigorous production review?
 
-If the answer to any of those is no, keep improving the code before running final checks or invoking the pre-push reviewer. The reviewer is a final quality gate, not a substitute for doing the maintainability pass yourself.
+If any answer is no, keep improving before requesting review. Do not imply production readiness while known quality debt remains undisclosed.
 
-Final responses must not imply production readiness while known design, maintainability, or quality debt remains undisclosed or unfixed.
+**Anti-laziness rule:** When you encounter dead code, legacy fields, or fallback spaghetti — delete it. Don't deprecate, work around, or leave it "for later." If deleting requires a refactor, do the refactor.
 
-**Anti-laziness rule:** Do not take the path of least resistance. When you encounter dead code, legacy fields, unused intermediate steps, or fallback spaghetti — delete it, don't deprecate it, don't work around it, don't leave it "for later." Ask WHY it exists. If the answer is "it used to be needed," delete it now. If deleting requires a migration or refactor, do the migration or refactor. The lazy path (leaving dead code, adding `@deprecated`, wrapping it in conditionals) always costs more later.
+## Review in deltas
 
-## Subagent parallelism (Task tool)
+A change can follow the preferred pattern and still be wrong if runtime behavior is inert, duplicated, or narrower than before. When reviewing or refactoring, ask:
 
-Use `run_in_background` so you never busy-wait or poll longer than the subagent actually runs.
+- What behavior did the old code guarantee? Preserve cardinality, side effects, fallbacks, and consumer-visible outputs unless intentionally changing them.
+- What did this helper used to tolerate? Do not accidentally turn optional enrichment into a hard requirement.
+- Does the new abstraction actually execute? Guards, caches, retries, and fallbacks only count if they are reachable at runtime.
+- What disappears silently? Joins, filters, early returns, and catch blocks can turn valid work into "nothing happened." Silent skips must be intentional and observable.
+- Who tears down spawned background/external work on every terminal path — not just the happy one? Route all terminal transitions through one shared, idempotent cleanup helper.
+- Would a future reviewer know a narrowing or best-effort behavior is intentional? Make the contract explicit.
 
-- **`run_in_background: true`** — You want to keep working in the foreground. The system notifies you when the subagent finishes. Do **not** await or block on these; continue other work until notified.
-- **`run_in_background: false`** — You need the subagent’s result before your next step. The call blocks until completion. Do **not** add manual waits on top of this.
+## errors
 
-**DAG-style work:** Launch independent work in the same wave with `run_in_background: true` (parallel). When you are notified each has completed, start dependents (next wave). When only one step must finish before you proceed, use `run_in_background: false` so you block cleanly without extra waiting logic.
-
-
-## Staff-level review mindset
-
-A change can follow the preferred pattern and still be wrong if the runtime behavior is inert, duplicated, or narrower than before.
-
-When reviewing or refactoring, reason in deltas:
-
-- **What behavior did the old code guarantee?** Preserve row cardinality, loading states, side effects, fallback paths, and consumer-visible outputs unless intentionally changing them.
-- **What did this helper used to tolerate?** If a related row, optional value, or metadata lookup fails, decide whether the primary operation should still happen. Do not accidentally turn optional enrichment into a hard requirement.
-- **Does the new abstraction actually execute?** Suspense fallbacks, error boundaries, memoization, caches, retries, and guards only count if the child/caller can reach that path at runtime.
-- **What disappears silently?** Joins, filters, early returns, optional chaining, and catch blocks can convert valid work into "nothing happened." Silent skips need to be intentional and observable when they affect product behavior.
-- **Would a future reviewer know this is intentional?** If behavior narrows, becomes best-effort, or intentionally tolerates missing related data, make that contract clear in the helper shape or a short comment.
-
-## Design mindset
-
-Design is not decoration applied after the logic works. It is part of the product behavior. A UI can be technically correct and still be wrong if it feels abrupt, noisy, cramped, unbalanced, visually confusing, or heavier than the task deserves.
-
-When touching anything with visual impact, think like a product designer, not a ticket-completer:
-
-- Start from the feeling and behavior you want the user to experience, then choose the simplest UI that creates it.
-- Prefer calm, deliberate interfaces over novelty, chrome, and "good enough" layout hacks.
-- Care about spacing, alignment, hierarchy, motion, density, and transitions as first-class correctness concerns.
-- Judge the change in context. Ask how it sits next to neighboring elements, what draws the eye first, and whether the motion explains the state change or merely calls attention to itself.
-- Never ship a UI detail you would describe as "fine" if you would notice it instantly in the product.
-
-Before touching any component or code with visual/UI implications, read the relevant design skills first. At minimum, read `product-ui-guidelines` (and load the topic files under `references/` that match the task). For shadcn CLI, component registries, or upstream component APIs, use the `shadcn` skill.
-
-## Empty states are silence, not commentary
-
-When there is no data to display, render nothing. Do not add placeholder messages like "No data available", "Not enough data for trends", or "Try a longer period." The absence of content is the clearest expression of nothing. Nothingness does not need annotating.
-
-Exception: actionable empty states where the user needs to **do something** to populate the view (e.g. "Connect your calendar to see events" with a button). If there is no action the user can take, show nothing.
-
-## Right-sized architecture
-
-Overengineering is architecture-to-problem mismatch. Choose the smallest abstraction that solves today's problem and the app's likely growth trajectory.
-
-Use these litmus tests before adding new infrastructure:
-
-1. **Real consumers:** 2+ concrete consumers now, or near-certain in the next set of features.
-2. **Simplest implementation:** Prefer plain constants and helper functions over frameworks, registries, or policy engines.
-3. **Reversible in 10 minutes:** If the abstraction is wrong, you can inline or remove it quickly.
-4. **Present over hypothetical:** Solve current production needs; defer speculative adapters until a second real implementation exists.
-
-Practical guidance:
-
-- Use `QUERY_FRESHNESS` tiers instead of per-hook magic numbers.
-- Use `invalidate*Queries()` helpers instead of repeated invalidate call clusters.
-- Use Supabase realtime directly; add a transport abstraction only after a second transport exists.
-- **Match existing patterns before inventing new ones.** If shadcn, Radix, or another library already solves a layout/interaction problem (overlay + slide panel, dropdown positioning, focus trapping), copy their approach. Clever alternatives (flex-split overlays, custom position math) look smart but introduce visual bugs that the proven pattern already solved. Start with the straightforward version; refactor only when a real limitation forces it.
-- **Separation does not require a Card.** Heading + `Separator` + `divide-y` achieves visual grouping without the padding and border overhead of `Card` wrappers. Reserve `Card` for bounded interactive content (editors, form groups). For settings/config pages, prefer flat sections with section headings, separators between zones, and `divide-y` within lists. Use subtle bordered containers (`rounded-lg border border-border/60`) only for tabbed or growing content areas.
-- **Think spatially, not linearly.** Pages should use multi-column grids where content naturally pairs. Never default to a single vertical stack or stretch small items into wide card grids. Group by semantic relationship (connections next to preferences, template next to rules), not by component type.
-
-## Treat errors with respect
-
-When you encounter a lint error, type error, or build failure:
-
-1. What is this error telling me? Read it carefully.
-2. Why does the compiler or linter think this is wrong?
-3. What does this reveal about the design?
-4. What is the correct solution (not just what passes)?
-
-Use explicit guards instead of forcing types:
-
-```typescript
-if (!callId) {
-  throw new Error("Cannot save call: no call ID provided");
-}
-// callId is now narrowed to string
-```
-
-Errors are protecting you from shipping broken code. Treat them as a design signal.
+Read every lint/type/build error carefully: what is it telling you, what does it reveal about the design, and what is the correct fix (not just what passes)? Use explicit guards instead of forcing types.
 
 ## Continuous improvement
 
-At the end of every session, review mistakes made or patterns discovered and record durable learnings. Choose the right destination:
-
-- **New skill** — a recurring, domain-specific "how to do X" theme with no existing home.
-- **Existing skill** — an addition or correction to a pattern already covered in a skill file.
-- **This file** — a generalist principle that applies everywhere and belongs in the always-on rule.
-
-**When updating any of the above:**
-
-1. Check for duplicates first.
-2. Keep it evergreen (no task summaries).
-3. State what not to do in prose; show only the correct way in code examples.
-4. Be concise. Examples can be snippets or abbreviations, not full implementations.
+After meaningful changes, ask what the session taught you that the next contributor would benefit from, and record durable learnings in the team's conventions. Keep entries evergreen (principles, not task stories), concise, and deduplicated. A change that fixed a fragile or duplicated pattern almost always teaches something worth writing down.
 
 ## Quality bar
 
-**Pre-commit:** `pnpm biome check --write && pnpm tsc --noEmit`
+- Run the project's full verification (lint → types → tests) before declaring work done. Type checks alone miss runtime test failures.
+- **Surfaced check output is in scope.** If a check you ran prints an error or warning, it is now part of the task — fix it, and never claim checks passed unless output is actually clean.
+- Fix simple mechanical type/lint errors even in files you didn't "own"; reserve caution for semantic overlap with someone else's in-progress work.
+- **Comments** exist only for non-obvious things, and describe the current code — never the edit session or a prior implementation. History belongs in version control.
+- **Dead code is a bug.** If your refactor makes something unused, trace callers and delete it in the same change (routes, helpers, props, written-but-never-read fields).
 
-**When to run `pnpm build`:** Always run `pnpm build` when changing `next.config.ts`, adding/removing route segment configs (`export const runtime`, `export const dynamic`), or modifying the server/client component boundary of layouts or pages. Build-time errors (prerendering, PPR compatibility, route config conflicts) do not surface in `tsc` or `pnpm dev`.
+### Review before finishing
 
-**Ownership mindset:** When running type checks or lints, fix all errors encountered. Do not dismiss errors as "pre-existing" or "unrelated".
+For any change that could ship a bug, run verification, then invoke the **pre-push-reviewer** subagent (see the companion reviewer document for its definition). It catches bugs linters and type checkers miss. Evaluate every finding on validity: fix the correct ones; for any you skip, state specifically why it is wrong or inapplicable. Loop until clean.
 
-**No prompt for quality checks:** After code changes, run `pnpm biome check --write` first to auto-apply formatting and lint fixes, then run `pnpm tsc --noEmit` for type checking. Do not ask before running these checks. Run `pnpm build` only when explicitly requested.
+Review feedback is input, not a spec — validate findings independently, push back when a suggestion would worsen the codebase, and prefer durable fixes over literal patch-ups. "Non-blocking" is not optional deferral: valid findings get fixed in the same pass.
 
-**Biome auto-fix:** `biome check --write` applies safe fixes for formatting, linting, and import organization. This should be run before type checking to catch and fix issues automatically.
+## Testing discipline
 
-**Hard rule: surfaced check output is in scope.** If `biome`, `tsc`, tests, or any required quality check prints a warning or error, that issue is NOW part of the task. Do not rationalize it away as "outside the files I touched" or "probably pre-existing" if it appeared in the command output you just ran.
+Tests exist to catch plausible production regressions, not to hit coverage numbers.
 
-**Simple type and `tsc` errors — fix them.** Straightforward TypeScript issues (bad import after a rename, missing export, wrong narrow, stale generated types, obvious null checks, validator pointing at a missing route file) should **always** be fixed when you see them in check output. They are mechanical, low-conflict, and keeping the tree green helps everyone. "I didn't introduce it" is not a reason to leave them.
+**Test:** business rules and branching logic, auth boundaries, parsing and date math, bug-fix regressions, multi-step/async workflows.
 
-**Judgement: teammate overlap vs. trivial fixes.** Expect concurrent edits: do not do **large** refactors or rewrite someone else's feature in the same area they may be editing — that is what "avoid stomping on their work" means. It does **not** mean skipping surfaced `tsc`/Biome issues in files you did not "own" for the task. Fixing a simple type error or import in a file a teammate also touches is still appropriate; they would hit the same error. Reserve caution for **semantic** overlap (behavior, API shape, migrations), not for getting `pnpm tsc --noEmit` clean.
-
-**Hard rule: never claim checks passed unless they are actually clean.** "Ran Biome" is not the same as "Biome passed." Only report checks as passed when the command output contains zero errors and zero warnings. If any warning or error remains, either fix it before finishing or explicitly tell the user that checks are still not clean and why.
-
-**Priority order when rules seem to conflict:** Do not use "avoid unrelated edits" as an excuse to leave surfaced lint/type/test failures unresolved. Once a check reports an issue, the quality bar takes priority. The exception is only when fixing it would **directly conflict** with someone else's **in-progress** change to the **same** non-trivial code path (e.g. you know they are mid-refactor there) — and even then, prefer fixing simple `tsc` issues in adjacent lines or coordinating; do not use this exception to skip mechanical type fixes.
-
-**Comments:** Comments exist only for non-obvious things. If a competent developer would understand without the comment, delete it.
-
-**Dead code is a bug — but only delete what your task made dead.** Never mark code as `@deprecated` — delete it. Never leave unused functions, hooks, API routes, or imports "in case we need them later." Git has history. If a refactor makes a function, route, hook, or field unused, trace every caller, confirm zero references, and delete it in the same PR. However, do not delete things that are not related to your code changes and likley related to someone elses changes — see the collaboration guardrails. If in doubt, ASK FIRST. This includes:
-- Unused API routes (delete the route file)
-- Unused hooks (delete the function and its export)
-- Unused props on components (remove from interface and all call sites)
-- Unused DB fields being written to but never read (stop writing)
-- Intermediate processing steps superseded by a better pipeline (delete the function)
-
-### Code review before finishing
-
-If a task changes executable code, product behavior, data flow, UI behavior, accessibility behavior, API behavior, database logic, or anything else that could ship a bug, run quality checks and then invoke the **`pre-push-reviewer`** subagent (`.cursor/agents/pre-push-reviewer.md`). This catches bugs that linters and type checkers miss.
-
-Before running checks or invoking the reviewer, complete the production-ready implementation gate above. Do not ask the reviewer to review code you already know should be refactored, extracted, simplified, or otherwise brought up to the standard we would be proud to push.
-
-1. `pnpm biome check --write`
-2. `pnpm tsc --noEmit`
-3. Invoke the `pre-push-reviewer` subagent. If the task only touched specific files, scope the review by telling the subagent which files to review (e.g. "only review components/prep/prep-action-button.tsx and lib/hooks/use-prep.ts"). Otherwise let it review the full branch diff. Always provide full context on the what and why of your changes so its can review with full context. Provide the path to any infromative .md files related to your work if they exist.
-4. The subagent will return a **review ID** (e.g. `review-prep-button-a3f1`) and save its findings to `.cursor/reviews/{review-id}.md`. Keep track of this ID.
-5. Evaluate every finding on validity. Fix the ones that are correct. If you skip any, state specifically why it is wrong or inapplicable — not that it is "low priority" or "cosmetic."
-6. After fixes re-run the subagent passing the same review ID so it can read its previous findings. If you skipped anything you must send that reasoning back to subagent so it doesn't re-raise. Do this loop until no issues remain.
-
-**Review feedback is input, not a spec.** Reviewers identify risks; they do not get to dictate brittle or unscalable fixes.
-
-- Validate every finding independently against product behavior, architecture, and the existing rules. Do not cargo-cult the suggested implementation.
-- Push back explicitly when a review suggestion would worsen the codebase, even if the underlying concern is real.
-- Prefer durable fixes over literal patch-ups. Example: use a single current-version constant plus cache invalidation logic, not a forever-growing union like `"v1" | "v2" | "v3"`.
-- Prefer tests that catch the real regression at the service / route / UI layer. Do not add prompt-string tests, helper-only tests, or implementation-coupled assertions just because a reviewer asked for them.
-- Do not add tests for self-evident straight-line logic just to satisfy a review thread. If the assertion is only that code returns the value it just queried or passed through, skip the test unless the area is in a mandatory coverage zone like auth, tenancy, or concurrency.
-- If a reviewer is directionally right but solutionally wrong, keep the finding, reject the fix, and implement the correct design instead.
-
-## Server/client component architecture
-
-Pages in `app/` are server components. Interactive page content lives in a client component in `components/`, rendered inside a `<Suspense>` boundary with a skeleton fallback. Do not add `"use client"` to files in `app/`.
-
-```typescript
-// app/(dashboard)/accounts/page.tsx — server component
-import { Suspense } from "react";
-import { AccountsPageClient } from "@/components/accounts/accounts-page-client";
-import { AccountsSkeleton } from "@/components/accounts/accounts-skeleton";
-
-export default function AccountsPage() {
-  return (
-    <Suspense fallback={<AccountsSkeleton />}>
-      <AccountsPageClient />
-    </Suspense>
-  );
-}
-```
-
-**`next/dynamic` with `ssr: false` is only valid inside client components.** Using it in a server component (any file without `"use client"`) causes a build error. If you need to lazy-load something rendered from a server component, either import a client component that does the dynamic import internally, or use `next/dynamic` without `ssr: false`.
-
-**Suspense must have a reachable suspension point.** Do not add a Suspense fallback just because a page was split into server/client files. Verify the child actually suspends (server async component, lazy/dynamic import, or a suspense-enabled data hook). If the client component uses `isLoading` from TanStack Query and never throws a promise, keep one loading path instead of duplicating an unreachable fallback.
-
-**`new Date()` in component state:** Do not call `new Date()` in a `useState` initializer. It creates a hydration mismatch (server time != client time) and blocks PPR if `cacheComponents` is ever enabled. Initialize time-dependent state with `null` and set the real value in a `useEffect`. Use the `TimeProvider` and `useNow()` hook instead of raw `new Date()`.
-
-**Client constants:** Client components must not import runtime values from `@/lib/db/schema` or `@/lib/db/schema/enums`. Schema modules import Drizzle runtime. Put shared UI enum/config values in a non-DB module such as `@/lib/domain/enums`, and keep schema imports in client files type-only.
-
-## No local barrel files
-
-Do not create `index.ts` barrel files that re-export from sibling modules (e.g., `lib/hooks/index.ts` with `export * from "./use-accounts"`). `optimizePackageImports` only works for `node_modules` barrels, not local ones. Local barrels pull every re-exported module into the bundle even when only one export is used.
-
-Import directly from the specific module:
-
-```typescript
-import { useAccounts } from "@/lib/hooks/use-accounts";
-```
-
-## Performance mindset
-
-We design for predictable latency and minimal IO. Optimize for fewer round trips,
-set-based operations, and cached reads over repeated work.
-
-**Concepts to watch for:**
-
-- N+1 queries (per-item DB calls inside loops)
-- Sequential IO (await in loops for independent work)
-- Redundant refetching (mount + focus + manual refetch)
-- Per-item external API calls (fan-out without batching)
-- Recomputing heavy transformations in render
-
-**Red flags:**
-
-- `for ... await` over DB or external API calls
-- Multiple queries against the same table in a single request
-- Fetching per-row metadata when you could join once
-- Query hooks without `staleTime` for list data
-- Trigger/cron tasks doing per-item queries instead of bulk maps
-
-## Pagination contracts
-
-Paginated data must never be presented as complete unless the UI can reach the
-rest of the cursor.
-
-- Generic hook names like `useAccounts()` or `useTasks()` must not return only
-  the first page. If a first-page preview is truly needed, name it explicitly
-  (`useAccountsFirstPage`) and make the UI visibly partial.
-- Cursor-aware hooks must expose a way to progress the cursor. Product UIs must
-  either show an explicit Load More control or hide comprehensive output until
-  all pages are loaded.
-- Search, filters, selectors, metrics, and primary lists cannot silently operate
-  on page 1 only.
-
-## API and data safety contracts
-
-User-callable query parameters must be runtime-validated before branding or DB
-execution. `asAccountId()` / `asEventId()` are TypeScript casts, not validators;
-invalid filters should return a clear 400 instead of broadening results or
-surfacing database UUID errors.
-
-Routes that block on slow providers must declare the platform budget they need
-(`maxDuration`) or hand work to a durable background path. App-level provider
-timeouts do not help if the route is killed by the platform first.
-
-Cross-tenant lookup predicates belong in SQL, not only after the row is fetched.
-For JSONB containment lookups on user-owned tables such as note images, include
-`userId` in the query before `limit(1)` and keep post-query checks only as
-defense in depth.
-
-Multi-row invariants must be atomic. If a behavior changes related tables
-together (for example event/archive state plus linked calls, or version history
-plus current template), use one `db.transaction()` around the invariant.
-
-Provider errors persisted into product-visible fields must pass through a shared
-sanitization boundary. Do not store raw OAuth/provider `error.message` values in
-fields returned by client APIs.
-
-Derived side effects that follow source-of-truth writes need an explicit
-completion contract: await them, schedule durable work, or write a retry marker.
-Do not rely on unmanaged promises for important search/indexing updates.
-
-## Bounded fan-out
-
-`p-limit` values must protect a named resource, not cargo-cult a small number.
-Use provider quotas, timeout math, DB load, request attachment limits, or script
-flags to justify the value. If the number is not obvious, put the rationale next
-to the constant.
-
-Good examples:
-- Gmail sends: derive from Gmail quota units and per-user send limits.
-- Note image uploads: derive from max attachment count and total upload size.
-- Maintenance routes: make concurrency configurable or document the page-size
-  and DB-load tradeoff.
-
-## Using Task tool correctly when launching generalPurpose specialized subagents
-
-Always provide relevant context about the what and why to the subagent in addition to its specific task. If ever using a subagent as part of executing a plan provide in the prompt the path to the plan so the subagent can have full context. 
-
-Subagents can all other subagents and can use MCPs. Make sure subagents making code changes know to call and follow the pre-push-reviewer flow. If they are doing things that impact drizzle or DB stuff, they should be told they can use MCPs if helpful (i.e Supabase and Databricks.)
-
-If you need to follow up with a subagent ensure to use the resume functionality
-
-## Specialized guidance now lives in skills. Read ALL relevant pattern and convention skills before working to ensure you avoid common mistakes.
-
-### Backend, webhooks, and background jobs (staff-level guardrails)
-
-Operational rules learned from production review (idempotency before side effects, webhook HMAC and delivery-scoped idempotency, tenant predicates on every mutating SQL, paginated maintenance routes, live-catalog checks before claiming schema drift, route `maxDuration`, and Trigger.dev await discipline) are consolidated here—do not duplicate them in one-off rule files:
-
-| Topic | Where |
-| --- | --- |
-| Reserve DB row before external side effects; slow route `maxDuration` | `backend-data-security` → [api-route-conventions.md](../skills/backend-data-security/references/api-route-conventions.md) |
-| Tenancy on updates/deletes, maintenance pagination, DB invariants, catalog vs migration files | `backend-data-security` → [database-access-patterns.md](../skills/backend-data-security/references/database-access-patterns.md) |
-| Webhook HMAC, replay window, idempotency keys | [api-route-security.mdc](api-route-security.mdc) |
-| Trigger.dev SDK imports, no fire-and-forget in tasks / `after` | [trigger.basic.mdc](trigger.basic.mdc) |
+**Don't test:** constants, framework wiring, pass-through wrappers, trivial guards obvious from types, or helpers whose real risk lives in a higher-level flow (test the flow instead).
