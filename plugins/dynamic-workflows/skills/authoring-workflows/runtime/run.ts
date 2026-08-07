@@ -48,7 +48,8 @@ import {
   DEFAULT_CONCURRENCY,
   initRuntime,
   makeWorkflowContext,
-  type SdkPrompt,
+  type SdkRunOutcome,
+  type SdkStart,
 } from "./runtime.js";
 import { schedulePrune } from "./transcript.js";
 import type { ModelParameterValue, RunState, WorkflowMeta } from "./types.js";
@@ -284,35 +285,61 @@ function fakeFromSchema(schema: Record<string, unknown>, depth = 0): unknown {
  * `WORKFLOW_DRYRUN_DELAY_MS` stretches that delay, which is how you keep a run
  * alive long enough to work on the progress views.
  */
-function dryRunPrompt(): SdkPrompt {
+function dryRunStart(): SdkStart {
   const base = Number(process.env.WORKFLOW_DRYRUN_DELAY_MS ?? 150);
-  return async (message) => {
-    await new Promise((r) => setTimeout(r, base + Math.random() * 400));
-    // agentJSON appends the schema as the final line; anything else that looks
-    // like `{"type"` is a nested subschema and must not be matched.
-    const lastLine = message.slice(message.lastIndexOf("\n") + 1);
-    if (lastLine.startsWith("{")) {
-      try {
-        const schema = JSON.parse(lastLine) as Record<string, unknown>;
-        return {
-          status: "finished",
-          result: JSON.stringify(fakeFromSchema(schema)),
-          usage: { totalTokens: 0 },
-        };
-      } catch {
-        // Fall through to the text stub.
+  return async (message) => ({
+    // No run id: nothing was started, so there is no transcript to point at.
+    wait: async () => {
+      await new Promise((r) => setTimeout(r, base + Math.random() * 400));
+      // agentJSON appends the schema as the final line; anything else that looks
+      // like `{"type"` is a nested subschema and must not be matched.
+      const lastLine = message.slice(message.lastIndexOf("\n") + 1);
+      if (lastLine.startsWith("{")) {
+        try {
+          const schema = JSON.parse(lastLine) as Record<string, unknown>;
+          return {
+            status: "finished",
+            result: JSON.stringify(fakeFromSchema(schema)),
+            usage: { totalTokens: 0 },
+          };
+        } catch {
+          // Fall through to the text stub.
+        }
       }
-    }
-    return {
-      status: "finished",
-      result: "[dry run] no agent was executed for this step.",
-      usage: { totalTokens: 0 },
-    };
+      return {
+        status: "finished",
+        result: "[dry run] no agent was executed for this step.",
+        usage: { totalTokens: 0 },
+      };
+    },
+  });
+}
+
+/** The slice of `@cursor/sdk` this runtime uses. */
+interface SdkModule {
+  Agent: {
+    create(options: Record<string, unknown>): Promise<SdkAgentHandle>;
   };
 }
 
-/** Loads @cursor/sdk from the runtime's own dependency directory. */
-async function loadSdkPrompt(): Promise<SdkPrompt> {
+interface SdkAgentHandle {
+  send(
+    message: string,
+    options?: { onStep?: (args: { step: unknown }) => void }
+  ): Promise<{ id: string; wait: () => Promise<SdkRunOutcome> }>;
+  [Symbol.asyncDispose](): Promise<void>;
+}
+
+/**
+ * Loads @cursor/sdk from the runtime's own dependency directory and adapts it to
+ * `SdkStart`.
+ *
+ * `Agent.prompt` would be shorter, but it creates, sends, waits, and disposes in
+ * one call, handing back only the final result. Doing those steps here keeps the
+ * run handle — whose id exists seconds before the answer does — and lets the
+ * `onStep` callback through, which is what a live transcript is built from.
+ */
+async function loadSdkStart(): Promise<SdkStart> {
   const require = createRequire(resolve(DEPS_DIR, "package.json"));
   let entry: string;
   try {
@@ -322,10 +349,54 @@ async function loadSdkPrompt(): Promise<SdkPrompt> {
       `@cursor/sdk is not installed. Run bootstrap.sh in the authoring-workflows skill first.`
     );
   }
-  const sdk = (await import(pathToFileURL(entry).href)) as {
-    Agent: { prompt: SdkPrompt };
+  const sdk = (await import(pathToFileURL(entry).href)) as SdkModule;
+
+  return async (message, options) => {
+    const agent = await sdk.Agent.create({
+      model: options.model,
+      ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
+      local: { cwd: options.local.cwd },
+      ...(options.tools !== undefined ? { tools: options.tools } : {}),
+      ...(options.disallowedTools !== undefined
+        ? { disallowedTools: options.disallowedTools }
+        : {}),
+    });
+
+    // `Agent.prompt` disposed the agent for us; owning the handle means owning
+    // that too, on every path out.
+    let released = false;
+    const release = async (): Promise<void> => {
+      if (released) return;
+      released = true;
+      try {
+        await agent[Symbol.asyncDispose]();
+      } catch {
+        // Disposal failing must not mask the agent's own outcome.
+      }
+    };
+
+    try {
+      const run = await agent.send(
+        message,
+        options.onStep !== undefined
+          ? { onStep: ({ step }) => options.onStep!(step) }
+          : {}
+      );
+      return {
+        runId: run.id,
+        wait: async () => {
+          try {
+            return await run.wait();
+          } finally {
+            await release();
+          }
+        },
+      };
+    } catch (err) {
+      await release();
+      throw err;
+    }
   };
-  return sdk.Agent.prompt.bind(sdk.Agent);
 }
 
 async function main(): Promise<void> {
@@ -414,7 +485,7 @@ async function main(): Promise<void> {
     dryRun: opts.dryRun,
     args: opts.args,
     apiKey: auth.apiKey,
-    prompt: opts.dryRun ? dryRunPrompt() : await loadSdkPrompt(),
+    start: opts.dryRun ? dryRunStart() : await loadSdkStart(),
   });
 
   const server = opts.server ? await startViewServer(store, opts.port) : undefined;

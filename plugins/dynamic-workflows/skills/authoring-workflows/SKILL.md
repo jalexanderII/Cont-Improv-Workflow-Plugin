@@ -140,6 +140,44 @@ the wrong one for everything else.
 
 A good workflow is usually read-only except for one clearly marked phase.
 
+### Getting work out of a worktree
+
+Isolating writers is the easy half. Collecting their edits is where these
+workflows lose work, because a patch is **bytes**, and the obvious ways to move
+bytes through a script quietly damage them:
+
+```ts
+const patch = execFileSync("git", ["diff", "--binary", "--cached", "HEAD"], { cwd: dir });
+writeFileSync(patchFile, patch);
+execFileSync("git", ["apply", "--binary", "--whitespace=nowarn", patchFile], { cwd: repo });
+```
+
+Four rules, each of which has cost someone a run:
+
+- **Never `.trim()` a diff.** In a unified diff a blank context line is encoded
+  as a single space, so trailing whitespace is content: trimming deletes that
+  last line, the hunk ends up shorter than its header promises, and `git apply`
+  rejects the entire patch with `corrupt patch at line N`. The line it names is
+  the end of the last hunk, which reads like a conflict and sends you looking in
+  the wrong place. Keep the helper that trims git output for reports separate
+  from the one that captures diffs, so the trimming one cannot reach a patch by
+  accident.
+- **Never decode a patch to a string.** No `encoding` on the capture, no
+  `input:` on the apply. A patch is a `Buffer`; a UTF-8 round-trip rewrites
+  every byte that isn't valid UTF-8, so a binary delta or a latin-1 source file
+  applies mangled or not at all.
+- **`git add -A` before diffing.** `git diff HEAD` omits untracked files, so
+  files the agent *created* are silently absent from the patch.
+- **`git apply --check` before applying.** Validate against the shared tree
+  first, and when the check fails, keep the worktree and report its path. The
+  patch is the only copy of that agent's work, and a run that deletes it in a
+  `finally` has destroyed the thing it was hired to produce. Report that case
+  distinctly from an agent that failed — the work exists, it just needs a human.
+
+Report an agent that finished but produced an empty diff as its own outcome too.
+It is neither a success nor a failure, and counting it as either hides whether
+the migration didn't apply to that file or the agent's edits went astray.
+
 ## Six shapes that cover most tasks
 
 `templates/` holds a working script for each. Copy the closest one and adapt it
@@ -276,9 +314,21 @@ result it got back. Failed tool calls are expanded on arrival; the rest collapse
 
 Each transcript is its own tab, because comparing subagents is usually the
 point — three verifiers that disagreed, or a worker against the synthesizer that
-consumed it, want to be open side by side. The page is plain server-rendered
-HTML with no JavaScript, so Cmd+S saves a working copy, and `/agent/<n>.json`
-returns the same data for anything scripting against a live run.
+consumed it, want to be open side by side. `/agent/<n>.json` returns the same
+data for anything scripting against a run.
+
+**Agents are readable while they work, not just afterwards.** A running agent's
+page fills in as it goes and refreshes itself every three seconds, staying
+pinned to the newest step if you were already at the bottom. That is the fastest
+way to see a fan-out going wrong — an agent looping on a tool, or reasoning from
+a premise you didn't intend — while there is still time to stop it.
+
+A live page is assembled in the runner's memory as the SDK reports each step, so
+tool payloads are truncated and very long transcripts drop their oldest steps
+(the page says so when that happens). The moment the agent finishes, the page
+switches to the SDK's stored copy, which is complete and untruncated. Only the
+finished page is fully static: it carries no JavaScript at all, so `Cmd+S` saves
+a working copy.
 
 This is a local read of the SDK's own agent store — no network and no spend, so
 opening a transcript costs nothing. It is the fastest way to answer "why did
@@ -300,6 +350,10 @@ wf transcript <runId> 3 --json   # the same data on stdout
 
 The written page is the same self-contained HTML, saved under the run's own
 directory, so it opens straight from disk with no server involved.
+
+`wf transcript` only reads finished agents. A live one exists solely in the
+running process's memory, so it points you at the dashboard instead of blocking
+until the agent ends.
 
 ## Retention
 
@@ -346,4 +400,7 @@ Common failures and what they mean:
 | `agentJSON` returns `null` | Model returned prose; tighten the schema and the instruction |
 | Fan-out finds nothing | Discovery phase returned an empty list; check its prompt in `wf show` |
 | Edits conflict or vanish | Concurrent writers sharing one `cwd`; give each a worktree |
+| `git apply` says `corrupt patch at line N` | The diff was trimmed or decoded to a string; capture it as raw `Buffer` bytes and apply from a file |
+| Worktree agents succeeded but the main tree is empty | Patches failed to apply and the worktrees were cleaned up anyway; `--check` first and keep the worktree on failure |
+| A new file the agent wrote is missing from the patch | `git diff HEAD` skips untracked files; `git add -A` in the worktree first |
 | Run never terminates | A loop without a stall detector; add one, and lower `--cap` |

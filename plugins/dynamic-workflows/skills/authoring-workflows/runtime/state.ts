@@ -148,6 +148,20 @@ export class RunStore {
     this.touch();
   }
 
+  /**
+   * Attaches the SDK run id to an already-running agent.
+   *
+   * Separate from `updateAgent` because this is not a status change: routing it
+   * through a running -> running transition would reset `startedAt` and lose the
+   * seconds the agent spent starting up.
+   */
+  setAgentRun(agent: AgentRecord, runId: string, cwd?: string): void {
+    agent.runId = runId;
+    if (cwd !== undefined) agent.cwd = cwd;
+    this.append("agent_run", { id: agent.id, runId });
+    this.touch();
+  }
+
   setViewUrl(url: string): void {
     this.state.viewUrl = url;
     this.touch();

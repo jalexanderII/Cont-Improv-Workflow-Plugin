@@ -236,7 +236,10 @@ async function transcript(
 
   if (agentNumber === undefined) {
     const rows = state.agents.filter(
-      (a) => a.runId !== undefined || a.transcriptPruned === true
+      (a) =>
+        a.runId !== undefined ||
+        a.transcriptPruned === true ||
+        a.status === "running"
     );
     if (rows.length === 0) {
       process.stdout.write(`${runId} has no stored transcripts.\n`);
@@ -244,7 +247,12 @@ async function transcript(
     }
     process.stdout.write(`${state.workflow}  ${runId}\n\n`);
     for (const a of rows) {
-      const mark = a.runId !== undefined ? "" : "  (expired)";
+      const mark =
+        a.status === "running" || a.status === "pending"
+          ? "  (running — watch it on the dashboard)"
+          : a.runId === undefined
+            ? "  (expired)"
+            : "";
       process.stdout.write(`  #${a.id}  ${a.phase}  ${a.label}${mark}\n`);
     }
     process.stdout.write(`\nRead one with: wf transcript ${runId} <#>\n`);
@@ -256,6 +264,22 @@ async function transcript(
     process.stderr.write(`no agent #${agentNumber} in ${runId}\n`);
     process.exit(66);
   }
+  // A run id exists from the moment the agent starts, but the stored transcript
+  // only resolves once it ends: the SDK tails the run's event stream, so asking
+  // here would block until the agent finished. The live view belongs to the
+  // dashboard, which reads it from the running process's own memory.
+  if (record.status === "pending" || record.status === "running") {
+    const where =
+      state.viewUrl !== undefined
+        ? `${state.viewUrl}/agent/${agentNumber}`
+        : "the run's dashboard";
+    process.stderr.write(
+      `agent #${agentNumber} is still running. Watch it live at ${where}, ` +
+        `or run this again once it finishes.\n`
+    );
+    process.exit(75);
+  }
+
   if (record.runId === undefined) {
     process.stderr.write(
       record.transcriptPruned === true

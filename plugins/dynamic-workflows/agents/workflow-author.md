@@ -51,6 +51,27 @@ on a wrong assumption spends real money before anyone notices.
 - Put deterministic plumbing (git commands, globbing, grouping, dedup) in the
   script. Models are for judgment.
 
+### If writers get their own worktrees
+
+Copy `templates/migrate.ts`'s capture-and-apply helpers rather than writing your
+own — the obvious version loses the agents' work:
+
+- **Never `.trim()` or `encoding`-decode a `git diff`.** A patch is a `Buffer`.
+  Trimming drops the newline that ends the final hunk and `git apply` then
+  rejects the whole patch as `corrupt patch at line N`; decoding rewrites any
+  byte that isn't valid UTF-8. Keep one helper for readable git output
+  (`rev-parse`, `status`) that trims, and a separate one for diffs that does not
+  touch the bytes.
+- **Apply from a file, not stdin.** `git apply --binary --whitespace=nowarn
+  <file>`, with `--check` first so a bad patch can't half-apply.
+- **`git add -A` in the worktree before diffing,** or files the agent created are
+  silently missing from the patch.
+- **Never delete a worktree whose patch didn't apply.** Report the path and flag
+  it as an apply conflict, distinct from an agent failure. The worktree is the
+  only remaining copy of that work.
+- **An empty diff is its own outcome.** An agent that reports success and
+  changes nothing is neither migrated nor failed; say so in the report.
+
 ## Validate before returning
 
 Write the script to `.cursor/workflows/<name>.ts`, then run it:
