@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "node ./hooks/gate-workflow-launch.mjs",
+        "matcher": "wf\\s+(run|tmux)\\b",
+        "failClosed": false
+      }
+    ]
+  }
+}

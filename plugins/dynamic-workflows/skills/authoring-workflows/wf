@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Single entry point for the workflow runtime.
+#
+#   wf run <script> [--args <json>] [--concurrency n] [--fresh] [--no-server]
+#   wf tmux <script> [...]        launch detached and print how to watch it
+#   wf watch-info <runId>         reprint how to watch an existing run
+#   wf save <runId> [--name n] [--personal]   save the run as a /command
+#   wf login | logout | auth      sign in once; no per-shell env vars needed
+#   wf list | show <id> | watch <id> | stop <id> | resume <id> | clean
+#
+# Uses the tsx installed by bootstrap.sh rather than npx, so a run never
+# depends on the project's own toolchain.
+
+set -euo pipefail
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME_DIR="$SKILL_DIR/runtime"
+RUNS_DIR="$HOME/.cursor/workflows-runtime/runs"
+TSX="$HOME/.cursor/workflows-runtime/deps/node_modules/.bin/tsx"
+
+if [ ! -x "$TSX" ]; then
+  echo "Runtime is not bootstrapped. Run: $SKILL_DIR/bootstrap.sh" >&2
+  exit 69
+fi
+
+# Reads a top-level string field out of a run's state.json without needing jq.
+state_field() {
+  local run_id="$1" field="$2" file="$RUNS_DIR/$1/state.json"
+  [ -f "$file" ] || return 1
+  sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$file" | head -1
+}
+
+# Everything a human needs to see the run, in one block. Printed on launch and
+# reprintable later, so nobody has to reconstruct it from memory.
+print_watch_block() {
+  local run_id="$1" session="${2:-}" url
+  url="$(state_field "$run_id" viewUrl 2>/dev/null || true)"
+
+  echo
+  echo "How to watch this run"
+  echo "---------------------"
+  if [ -n "$url" ]; then
+    echo "  Live dashboard : $url"
+  else
+    echo "  Live dashboard : (starting; run 'wf watch-info $run_id' in a moment)"
+  fi
+  if [ -n "$session" ]; then
+    echo "  Terminal view  : tmux attach -t $session"
+    echo "  Peek, no attach: tmux capture-pane -pt $session"
+  fi
+  echo "  Status         : wf show $run_id"
+  echo
+  echo "  Run id: $run_id"
+  echo
+  if [ -n "$session" ]; then
+    echo "  The dashboard stays up briefly after the run ends, then exits;"
+    echo "  the canvas has the final report. The pane stays open for reading."
+    echo "  Close it with: tmux kill-session -t $session"
+    echo
+  fi
+}
+
+command="${1:-list}"
+shift || true
+
+case "$command" in
+  run)
+    exec "$TSX" "$RUNTIME_DIR/run.ts" "$@"
+    ;;
+  tmux)
+    script="${1:?usage: wf tmux <script> [...]}"
+    # Mint the id here so we can watch the run we just started rather than
+    # guessing which of the run directories is ours.
+    run_id="$(date -u +%Y%m%d%H%M%S)-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    session="wf-$(basename "${script%.*}")-$run_id"
+
+    # A new tmux session inherits the tmux *server's* environment, not the
+    # calling shell's. With a server already running, an exported
+    # CURSOR_API_KEY would silently fail to reach the run. Hand the variables
+    # over through a private file rather than the command line, so the key
+    # never shows up in `ps` output or tmux's own history.
+    env_file="$(mktemp "${TMPDIR:-/tmp}/wf-env-XXXXXX")"
+    chmod 600 "$env_file"
+    for var in CURSOR_API_KEY WORKFLOW_MODEL WORKFLOW_CONCURRENCY \
+               WORKFLOW_DRYRUN_DELAY_MS WORKFLOW_SDK_VERSION; do
+      if [ -n "${!var:-}" ]; then
+        printf 'export %s=%q\n' "$var" "${!var}" >>"$env_file"
+      fi
+    done
+
+    # A detached run's only live view is the dashboard, so keep it up briefly
+    # after the run ends. Without that, a page whose last poll landed mid-run
+    # freezes showing "running" for a run that has already finished.
+    linger=""
+    case " $* " in *" --linger "*) ;; *) linger="--linger 90" ;; esac
+
+    tmux new-session -d -s "$session" \
+      ". '$env_file'; rm -f '$env_file'; '$TSX' '$RUNTIME_DIR/run.ts' --run-id '$run_id' $linger $(printf '%q ' "$@")"
+
+    # Keep the pane (and its report) after the process exits. The previous
+    # approach parked on `read -n 1`, which meant Cursor's terminal and tmux
+    # emitting scroll/arrow escape sequences on redraw showed up as stray
+    # ^[[B at the prompt and could dismiss it. remain-on-exit needs no input
+    # at all, so there is nothing to garble.
+    tmux set-option -t "$session" -w remain-on-exit on 2>/dev/null || true
+
+    # The HTTP view binds a moment after launch; wait briefly so the block we
+    # print includes a URL instead of a placeholder.
+    for _ in $(seq 1 40); do
+      [ -n "$(state_field "$run_id" viewUrl 2>/dev/null || true)" ] && break
+      sleep 0.25
+    done
+
+    print_watch_block "$run_id" "$session"
+    ;;
+  watch-info)
+    run_id="${1:?usage: wf watch-info <runId>}"
+    session="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -- "$run_id" || true)"
+    print_watch_block "$run_id" "$session"
+    ;;
+  list | show | watch | stop | resume | clean)
+    exec "$TSX" "$RUNTIME_DIR/manage.ts" "$command" "$@"
+    ;;
+  save)
+    exec "$TSX" "$RUNTIME_DIR/save.ts" "$@"
+    ;;
+  login | logout)
+    exec "$TSX" "$RUNTIME_DIR/auth-cli.ts" "$command" "$@"
+    ;;
+  auth)
+    exec "$TSX" "$RUNTIME_DIR/auth-cli.ts" "${1:-status}"
+    ;;
+  bootstrap)
+    exec "$SKILL_DIR/bootstrap.sh" "$@"
+    ;;
+  *)
+    echo "unknown command: $command" >&2
+    echo "usage: wf {run|tmux|watch-info|list|show|watch|stop|resume|clean|bootstrap}" >&2
+    exit 64
+    ;;
+esac

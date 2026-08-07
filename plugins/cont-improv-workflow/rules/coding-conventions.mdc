@@ -1,4 +1,7 @@
 ---
+description: >-
+  Stack-agnostic engineering conventions for production-ready implementation,
+  review, testing judgment, architecture, and collaboration.
 alwaysApply: true
 ---
 
