@@ -18,6 +18,11 @@ import {
 } from "./model.js";
 import { runCacheDir } from "./paths.js";
 import type { RunStore } from "./state.js";
+import {
+  endLiveTranscript,
+  pushLiveStep,
+  startLiveTranscript,
+} from "./transcript.js";
 import type {
   AgentRecord,
   ModelSelection,
@@ -72,10 +77,30 @@ interface RuntimeContext {
   dryRun: boolean;
   args: unknown;
   /** Injected by run.ts so this module stays free of a hard SDK import. */
-  prompt: SdkPrompt;
+  start: SdkStart;
 }
 
-export type SdkPrompt = (
+export interface SdkRunOutcome {
+  status: string;
+  result?: string;
+  error?: { message: string };
+  usage?: { totalTokens: number };
+}
+
+/**
+ * A started agent, before it has finished.
+ *
+ * The runtime deliberately holds this rather than calling a one-shot
+ * prompt-and-wait: the run id arrives with it, seconds before the answer does,
+ * and that id is what makes a running agent's transcript addressable.
+ */
+export interface SdkRun {
+  /** Absent only when nothing was really started, as in a dry run. */
+  runId?: string;
+  wait: () => Promise<SdkRunOutcome>;
+}
+
+export type SdkStart = (
   message: string,
   options: {
     apiKey?: string;
@@ -83,15 +108,10 @@ export type SdkPrompt = (
     local: { cwd: string };
     tools?: string[];
     disallowedTools?: string[];
+    /** Called as each step lands, which is what feeds the live transcript. */
+    onStep?: (step: unknown) => void;
   }
-) => Promise<{
-  /** SDK run id. The only handle back to the agent's persisted transcript. */
-  id?: string;
-  status: string;
-  result?: string;
-  error?: { message: string };
-  usage?: { totalTokens: number };
-}>;
+) => Promise<SdkRun>;
 
 let ctx: RuntimeContext | undefined;
 let pool: Semaphore | undefined;
@@ -296,8 +316,9 @@ export async function agent(
 
   await pool!.acquire();
   c.store.updateAgent(record, "running");
+  startLiveTranscript(record.id, prompt, formatModelSelection(selection));
   try {
-    const result = await c.prompt(prompt, {
+    const started = await c.start(prompt, {
       ...(c.apiKey !== undefined ? { apiKey: c.apiKey } : {}),
       // Normalized, so `params` is absent rather than empty when the run and
       // the agent both left it alone: that's what selects the model's default
@@ -306,20 +327,22 @@ export async function agent(
       local: { cwd },
       ...(tools !== undefined ? { tools } : {}),
       ...(disallowedTools !== undefined ? { disallowedTools } : {}),
+      onStep: (step) => pushLiveStep(record.id, step),
     });
 
+    // Recorded before the agent finishes, so its transcript is addressable
+    // while it works rather than only afterwards. The cwd rides along only
+    // when it isn't the run's, since that is what scopes the agent store.
+    if (started.runId !== undefined) {
+      c.store.setAgentRun(record, started.runId, cwd === c.cwd ? undefined : cwd);
+    }
+
+    const result = await started.wait();
     const tokens = result.usage?.totalTokens ?? 0;
-    // The transcript link is worth keeping on every outcome, and the cwd only
-    // when it isn't the run's, since that is what scopes the local agent store.
-    const transcript = {
-      ...(result.id !== undefined ? { runId: result.id } : {}),
-      ...(cwd !== c.cwd ? { cwd } : {}),
-    };
 
     if (result.status !== "finished" || result.result === undefined) {
       c.store.updateAgent(record, "error", {
         tokens,
-        ...transcript,
         error: result.error?.message ?? `agent ended with status "${result.status}"`,
       });
       return null;
@@ -328,7 +351,6 @@ export async function agent(
     c.store.updateAgent(record, "finished", {
       tokens,
       preview: result.result.slice(0, PREVIEW_CHARS),
-      ...transcript,
     });
     if (cacheable) {
       writeCache(c.runId, hash, {
@@ -336,18 +358,24 @@ export async function agent(
         tokens,
         model: formatModelSelection(selection),
         savedAt: Date.now(),
-        ...transcript,
+        ...(record.runId !== undefined ? { runId: record.runId } : {}),
+        ...(record.cwd !== undefined ? { cwd: record.cwd } : {}),
       });
     }
     return result.result;
   } catch (err) {
-    // A throw means the run never started (auth, config, network). The script
-    // keeps going so one bad worker doesn't sink a 200-agent fan-out.
+    // A throw usually means the agent never started (auth, config, a rejected
+    // model). The script keeps going so one bad worker doesn't sink a
+    // 200-agent fan-out.
     c.store.updateAgent(record, "error", {
       error: err instanceof Error ? err.message : String(err),
     });
     return null;
   } finally {
+    // The SDK's stored copy is authoritative from here, so the live buffer is
+    // released as soon as the agent settles. That is what keeps this bounded to
+    // the agents actually in flight.
+    endLiveTranscript(record.id);
     pool!.release();
   }
 }

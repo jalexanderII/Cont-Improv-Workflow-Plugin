@@ -9,7 +9,7 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 
 import type { RunStore } from "./state.js";
-import { loadTranscript } from "./transcript.js";
+import { loadTranscript, readLiveTranscript } from "./transcript.js";
 import type { RunState } from "./types.js";
 import { PAGE } from "./view-page.js";
 import {
@@ -43,8 +43,9 @@ function projectForView(state: RunState): unknown {
       tokens: a.tokens,
       error: a.error,
       // Only whether a transcript can be opened, not the id itself: the page
-      // asks for it by agent number and the server resolves it.
-      transcript: a.runId !== undefined,
+      // asks for it by agent number and the server resolves it. A running agent
+      // is readable from the live buffer before it has a stored transcript.
+      transcript: a.runId !== undefined || a.status === "running",
       transcriptPruned: a.transcriptPruned === true,
     })),
   };
@@ -87,6 +88,32 @@ async function readTranscript(
   if (record === undefined) {
     return { ok: false, status: 404, error: `No agent #${agentNumber} in this run.` };
   }
+
+  // A running agent is served from the live buffer, never from the store: the
+  // store's conversation() tails the run's event stream and would not resolve
+  // until this agent finished, turning a page load into a hang.
+  if (record.status === "pending" || record.status === "running") {
+    const live = readLiveTranscript(agentNumber);
+    if (live === undefined) {
+      return {
+        ok: false,
+        status: 404,
+        error: "This agent hasn't produced any output yet. Reload in a moment.",
+      };
+    }
+    return {
+      ok: true,
+      page: {
+        ...live,
+        label: record.label,
+        phase: record.phase,
+        workflow: state.workflow,
+        agentNumber,
+        backHref: "/",
+      },
+    };
+  }
+
   if (record.runId === undefined) {
     return {
       ok: false,
