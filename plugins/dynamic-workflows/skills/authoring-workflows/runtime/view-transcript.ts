@@ -101,9 +101,14 @@ function stepHtml(step: TranscriptStep): string {
 export interface TranscriptPageData extends Transcript {
   label: string;
   phase: string;
-  /** The workflow run this subagent belongs to, for the back link. */
   workflow: string;
   agentNumber: number;
+  /**
+   * Where "back to the run" points. The live server passes `/`; a file written
+   * by `wf transcript` passes nothing, because a link to the filesystem root is
+   * worse than no link at all.
+   */
+  backHref?: string;
 }
 
 const STYLE = `
@@ -229,11 +234,15 @@ export function renderTranscriptPage(data: TranscriptPageData): string {
       ? '<div class="empty">This agent recorded no steps.</div>'
       : data.steps.map(stepHtml).join(""));
 
+  const back =
+    data.backHref !== undefined
+      ? `<a href="${esc(data.backHref)}">&larr; ${esc(data.workflow)}</a>`
+      : `<span>${esc(data.workflow)}</span>`;
+
   return document_(
     `#${data.agentNumber} ${esc(data.label)} — ${esc(data.workflow)}`,
     `<h1>#${data.agentNumber} ${esc(data.label)}</h1>` +
-      `<div class="facts">${facts.map((f) => `<span>${f}</span>`).join("")}` +
-      `<a href="/">&larr; ${esc(data.workflow)}</a></div>`,
+      `<div class="facts">${facts.map((f) => `<span>${f}</span>`).join("")}${back}</div>`,
     body
   );
 }

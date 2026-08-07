@@ -7,6 +7,7 @@
 #   wf save <runId> [--name n] [--personal]   save the run as a /command
 #   wf login | logout | auth      sign in once; no per-shell env vars needed
 #   wf list | show <id> | watch <id> | stop <id> | resume <id>
+#   wf transcript <id> [<agent#>]             read a subagent's transcript
 #   wf prune [--days n] [--all] [--dry-run]   drop stored subagent transcripts
 #   wf clean [--days n]                       drop old run directories
 #
@@ -120,7 +121,7 @@ case "$command" in
     session="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -- "$run_id" || true)"
     print_watch_block "$run_id" "$session"
     ;;
-  list | show | watch | stop | resume | prune | clean)
+  list | show | watch | stop | resume | transcript | prune | clean)
     exec "$TSX" "$RUNTIME_DIR/manage.ts" "$command" "$@"
     ;;
   save)
@@ -137,7 +138,7 @@ case "$command" in
     ;;
   *)
     echo "unknown command: $command" >&2
-    echo "usage: wf {run|tmux|watch-info|list|show|watch|stop|resume|prune|clean|bootstrap}" >&2
+    echo "usage: wf {run|tmux|watch-info|list|show|watch|stop|resume|transcript|prune|clean|bootstrap}" >&2
     exit 64
     ;;
 esac

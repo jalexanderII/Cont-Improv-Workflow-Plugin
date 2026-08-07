@@ -289,8 +289,17 @@ Two agents have no transcript: a dry-run agent, which never ran, and an agent
 that failed before it started, such as one given a model id the backend rejects.
 Their rows simply have no link.
 
-The dashboard is served by the run's own process, so transcripts are reachable
-only while it is alive — `--linger` extends that window.
+The dashboard is served by the run's own process, so those links only work while
+it is alive. After it exits, read a transcript from the CLI instead:
+
+```bash
+wf transcript <runId>            # which agents have one
+wf transcript <runId> 3          # write agent #3's page, print the path
+wf transcript <runId> 3 --json   # the same data on stdout
+```
+
+The written page is the same self-contained HTML, saved under the run's own
+directory, so it opens straight from disk with no server involved.
 
 ## Retention
 
@@ -299,6 +308,7 @@ and a fan-out makes dozens at once — so they expire on their own.
 
 | Command | Effect |
 | --- | --- |
+| `wf transcript <runId> [<n>]` | List stored transcripts, or write one out |
 | `wf prune` | Delete transcripts past the TTL |
 | `wf prune --days <n>` | Use a different cutoff for this pass |
 | `wf prune --all` | Delete every stored transcript this runtime created |
@@ -324,7 +334,8 @@ directories consistent. Agents created by other tools are never touched.
 - `wf show <runId>` — full detail including each failed agent's error
 - `wf watch <runId>` — follow a live run
 - `wf stop <runId>` — SIGTERM, so the runner records the stop and flushes state
-- The dashboard's **View** link — a subagent's full prompt, reasoning, and tool calls
+- The dashboard's **View** link, or `wf transcript <runId> <n>` once it's gone —
+  a subagent's full prompt, reasoning, and tool calls
 - Raw event log: `~/.cursor/workflows-runtime/runs/<runId>/events.jsonl`
 
 Common failures and what they mean:

@@ -108,6 +108,7 @@ async function readTranscript(
         phase: record.phase,
         workflow: state.workflow,
         agentNumber,
+        backHref: "/",
       },
     };
   } catch (err) {

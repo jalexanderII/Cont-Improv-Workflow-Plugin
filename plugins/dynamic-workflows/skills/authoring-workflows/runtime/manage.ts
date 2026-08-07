@@ -6,6 +6,7 @@
  *   wf watch <runId>
  *   wf stop <runId>
  *   wf resume <runId> [extra run.ts flags]
+ *   wf transcript <runId> [<agent#>] [--json]
  *   wf prune [--days <n>] [--all] [--dry-run]
  *   wf clean [--days <n>]
  *
@@ -19,7 +20,14 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,10 +37,12 @@ import {
   configuredTtlDays,
   DEFAULT_TTL_DAYS,
   formatBytes,
+  loadTranscript,
   pruneTranscripts,
   type PruneSummary,
 } from "./transcript.js";
 import type { RunState } from "./types.js";
+import { renderTranscriptPage } from "./view-transcript.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TSX = join(DEPS_DIR, "node_modules", ".bin", "tsx");
@@ -206,6 +216,77 @@ function reportPrune(summary: PruneSummary, scope: string): void {
   );
 }
 
+/**
+ * Writes one subagent's transcript out as a standalone page.
+ *
+ * The dashboard can only serve transcripts while the run's own process is
+ * alive, but they are retained for days after that. This is how you read one
+ * from a run that finished yesterday.
+ */
+async function transcript(
+  runId: string,
+  agentNumber: number | undefined,
+  json: boolean
+): Promise<void> {
+  const state = readRunState(runId);
+  if (state === undefined) {
+    process.stderr.write(`unknown run: ${runId}\n`);
+    process.exit(66);
+  }
+
+  if (agentNumber === undefined) {
+    const rows = state.agents.filter(
+      (a) => a.runId !== undefined || a.transcriptPruned === true
+    );
+    if (rows.length === 0) {
+      process.stdout.write(`${runId} has no stored transcripts.\n`);
+      return;
+    }
+    process.stdout.write(`${state.workflow}  ${runId}\n\n`);
+    for (const a of rows) {
+      const mark = a.runId !== undefined ? "" : "  (expired)";
+      process.stdout.write(`  #${a.id}  ${a.phase}  ${a.label}${mark}\n`);
+    }
+    process.stdout.write(`\nRead one with: wf transcript ${runId} <#>\n`);
+    return;
+  }
+
+  const record = state.agents.find((a) => a.id === agentNumber);
+  if (record === undefined) {
+    process.stderr.write(`no agent #${agentNumber} in ${runId}\n`);
+    process.exit(66);
+  }
+  if (record.runId === undefined) {
+    process.stderr.write(
+      record.transcriptPruned === true
+        ? `agent #${agentNumber} transcript expired and was removed by retention\n`
+        : `agent #${agentNumber} has no transcript\n`
+    );
+    process.exit(66);
+  }
+
+  const loaded = await loadTranscript(record.runId, record.cwd ?? state.cwd);
+  if (json) {
+    process.stdout.write(JSON.stringify(loaded, null, 2) + "\n");
+    return;
+  }
+
+  const dir = join(runDir(runId), "transcripts");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `agent-${agentNumber}.html`);
+  writeFileSync(
+    file,
+    renderTranscriptPage({
+      ...loaded,
+      label: record.label,
+      phase: record.phase,
+      workflow: state.workflow,
+      agentNumber,
+    })
+  );
+  process.stdout.write(`${file}\n`);
+}
+
 async function prune(days: number | "all", dryRun: boolean): Promise<void> {
   const summary = await pruneTranscripts({ days, dryRun });
   reportPrune(summary, days === "all" ? "all ages" : `older than ${days}d`);
@@ -260,6 +341,20 @@ async function main(): Promise<void> {
     case "resume":
       resumeRun(positional[0], rest.slice(rest.indexOf(positional[0]) + 1));
       return;
+    case "transcript": {
+      const [runId, agent] = positional;
+      if (runId === undefined) {
+        process.stderr.write("usage: wf transcript <runId> [<agent#>] [--json]\n");
+        process.exit(64);
+      }
+      const number = agent === undefined ? undefined : Number(agent);
+      if (number !== undefined && !Number.isInteger(number)) {
+        process.stderr.write(`agent must be a number, got: ${agent}\n`);
+        process.exit(64);
+      }
+      await transcript(runId, number, json);
+      return;
+    }
     case "prune": {
       const daysFlag = rest.indexOf("--days");
       const configured = configuredTtlDays();
