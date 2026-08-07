@@ -7,14 +7,14 @@ on:
     paths:
       - "plugins/**"
       - ".cursor-plugin/**"
-      - "scripts/validate-template.mjs"
+      - "scripts/**"
   push:
     branches:
       - main
     paths:
       - "plugins/**"
       - ".cursor-plugin/**"
-      - "scripts/validate-template.mjs"
+      - "scripts/**"
 
 jobs:
   validate:
@@ -30,3 +30,6 @@ jobs:
 
       - name: Run template validator
         run: node scripts/validate-template.mjs
+
+      - name: Test worktree patch round-trip
+        run: node scripts/test-patch-roundtrip.mjs

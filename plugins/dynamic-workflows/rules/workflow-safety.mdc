@@ -41,6 +41,11 @@ When a phase does write, keep it to one clearly identified phase, and give
 concurrent writers separate working directories (git worktrees). Agents sharing
 a working copy will overwrite each other's edits, and the failure is silent.
 
+Collecting those worktrees back into the main tree is its own trap: a mishandled
+patch strands every writer's work, also silently. Follow the capture-and-apply
+rules in `skills/authoring-workflows/SKILL.md` instead of improvising them, and
+never remove a worktree whose patch has not applied.
+
 ## Terminate
 
 Every loop needs both a round cap and a stall detector: stop when consecutive
