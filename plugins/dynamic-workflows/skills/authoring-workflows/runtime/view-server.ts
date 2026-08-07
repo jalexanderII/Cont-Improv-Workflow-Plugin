@@ -6,11 +6,17 @@
  * is the pull-based option, and the one that scales to hundreds of agents.
  */
 
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 
 import type { RunStore } from "./state.js";
+import { loadTranscript } from "./transcript.js";
 import type { RunState } from "./types.js";
 import { PAGE } from "./view-page.js";
+import {
+  renderTranscriptError,
+  renderTranscriptPage,
+  type TranscriptPageData,
+} from "./view-transcript.js";
 
 /**
  * Only what the page renders. The full snapshot carries a result preview and a
@@ -36,6 +42,10 @@ function projectForView(state: RunState): unknown {
       endedAt: a.endedAt,
       tokens: a.tokens,
       error: a.error,
+      // Only whether a transcript can be opened, not the id itself: the page
+      // asks for it by agent number and the server resolves it.
+      transcript: a.runId !== undefined,
+      transcriptPruned: a.transcriptPruned === true,
     })),
   };
 }
@@ -45,19 +55,105 @@ export interface ServerHandle {
   close: () => void;
 }
 
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, {
+    "content-type": "application/json",
+    "cache-control": "no-store",
+  });
+  res.end(JSON.stringify(body));
+}
+
+function sendHtml(res: ServerResponse, status: number, html: string): void {
+  res.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(html);
+}
+
+/**
+ * Resolves an agent's transcript against the live run, so a URL only ever
+ * names an agent number in this run and never an SDK run id.
+ */
+async function readTranscript(
+  store: RunStore,
+  agentNumber: number
+): Promise<
+  | { ok: true; page: TranscriptPageData }
+  | { ok: false; status: number; error: string }
+> {
+  const state = store.snapshot;
+  const record = state.agents.find((a) => a.id === agentNumber);
+  if (record === undefined) {
+    return { ok: false, status: 404, error: `No agent #${agentNumber} in this run.` };
+  }
+  if (record.runId === undefined) {
+    return {
+      ok: false,
+      status: 404,
+      error:
+        record.transcriptPruned === true
+          ? "This transcript expired and was removed by retention."
+          : "This agent has no transcript. An agent that never started, or a dry run, does not produce one.",
+    };
+  }
+
+  try {
+    const transcript = await loadTranscript(record.runId, record.cwd ?? state.cwd);
+    return {
+      ok: true,
+      page: {
+        ...transcript,
+        label: record.label,
+        phase: record.phase,
+        workflow: state.workflow,
+        agentNumber,
+        backHref: "/",
+      },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // The dashboard holds the snapshot it started with, so a `wf prune` during
+    // the post-run linger leaves it linking to a transcript that is now gone.
+    return {
+      ok: false,
+      status: 502,
+      error: /not found/i.test(message)
+        ? "This transcript is no longer in the agent store. It was most likely removed by `wf prune`."
+        : message,
+    };
+  }
+}
+
+
 export async function startViewServer(
   store: RunStore,
   port = 0
 ): Promise<ServerHandle> {
   const server: Server = createServer((req, res) => {
     if (req.url === "/state") {
-      res.writeHead(200, {
-        "content-type": "application/json",
-        "cache-control": "no-store",
-      });
-      res.end(JSON.stringify(projectForView(store.snapshot)));
+      sendJson(res, 200, projectForView(store.snapshot));
       return;
     }
+
+    // `/agent/3` is the page a View link opens; `.json` is the same data for
+    // anything scripting against a live run.
+    const agent = /^\/agent\/(\d+)(\.json)?$/.exec(req.url ?? "");
+    if (agent !== null) {
+      const number = Number(agent[1]);
+      const asJson = agent[2] !== undefined;
+      void readTranscript(store, number).then((result) => {
+        if (result.ok) {
+          if (asJson) sendJson(res, 200, result.page);
+          else sendHtml(res, 200, renderTranscriptPage(result.page));
+          return;
+        }
+        if (asJson) sendJson(res, result.status, { error: result.error });
+        else sendHtml(res, result.status, renderTranscriptError(number, result.error));
+      });
+      return;
+    }
+
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(PAGE);
   });

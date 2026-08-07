@@ -6,7 +6,10 @@
 #   wf watch-info <runId>         reprint how to watch an existing run
 #   wf save <runId> [--name n] [--personal]   save the run as a /command
 #   wf login | logout | auth      sign in once; no per-shell env vars needed
-#   wf list | show <id> | watch <id> | stop <id> | resume <id> | clean
+#   wf list | show <id> | watch <id> | stop <id> | resume <id>
+#   wf transcript <id> [<agent#>]             read a subagent's transcript
+#   wf prune [--days n] [--all] [--dry-run]   drop stored subagent transcripts
+#   wf clean [--days n]                       drop old run directories
 #
 # Uses the tsx installed by bootstrap.sh rather than npx, so a run never
 # depends on the project's own toolchain.
@@ -81,8 +84,8 @@ case "$command" in
     # never shows up in `ps` output or tmux's own history.
     env_file="$(mktemp "${TMPDIR:-/tmp}/wf-env-XXXXXX")"
     chmod 600 "$env_file"
-    for var in CURSOR_API_KEY WORKFLOW_MODEL WORKFLOW_CONCURRENCY \
-               WORKFLOW_DRYRUN_DELAY_MS WORKFLOW_SDK_VERSION; do
+    for var in CURSOR_API_KEY WORKFLOW_MODEL WORKFLOW_MODEL_PARAMS WORKFLOW_CONCURRENCY \
+               WORKFLOW_DRYRUN_DELAY_MS WORKFLOW_SDK_VERSION WORKFLOW_TRANSCRIPT_TTL_DAYS; do
       if [ -n "${!var:-}" ]; then
         printf 'export %s=%q\n' "$var" "${!var}" >>"$env_file"
       fi
@@ -118,7 +121,7 @@ case "$command" in
     session="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -- "$run_id" || true)"
     print_watch_block "$run_id" "$session"
     ;;
-  list | show | watch | stop | resume | clean)
+  list | show | watch | stop | resume | transcript | prune | clean)
     exec "$TSX" "$RUNTIME_DIR/manage.ts" "$command" "$@"
     ;;
   save)
@@ -135,7 +138,7 @@ case "$command" in
     ;;
   *)
     echo "unknown command: $command" >&2
-    echo "usage: wf {run|tmux|watch-info|list|show|watch|stop|resume|clean|bootstrap}" >&2
+    echo "usage: wf {run|tmux|watch-info|list|show|watch|stop|resume|transcript|prune|clean|bootstrap}" >&2
     exit 64
     ;;
 esac

@@ -4,7 +4,8 @@
  *   wf run <name-or-path> [options]
  *
  *   --args <json>        Value exposed to the script as its args
- *   --model <id>         Default model for every agent (default composer-2.5)
+ *   --model <id>         Catalog model id for every agent (default composer-2.5)
+ *   --param <id=value>   Model parameter, repeatable: --param effort=high
  *   --concurrency <n>    Max simultaneous agents (default 16)
  *   --cap <n>            Hard agent ceiling for the run (default 1000)
  *   --dry-run            Stub every agent: no network, no spend
@@ -15,6 +16,15 @@
  *   --no-server          Skip the live HTTP view
  *   --no-canvas          Skip the final canvas
  *   --json               Print the machine-readable summary only
+ *
+ * `--model` takes a catalog id only. Effort and speed are parameters, so Grok
+ * at high effort with fast enabled is:
+ *
+ *   --model grok-4.5 --param effort=high --param fast=true
+ *
+ * not `--model cursor-grok-4.5-high-fast`, which is a UI slug the backend
+ * rejects. `WORKFLOW_MODEL` and `WORKFLOW_MODEL_PARAMS` (`effort=high,fast=true`)
+ * set the same two defaults from the environment.
  */
 
 import { createRequire } from "node:module";
@@ -25,6 +35,12 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { authHelpText, resolveAuth } from "./auth.js";
+import {
+  normalizeModelSelection,
+  parseModelParam,
+  parseModelParamList,
+  upsertModelParam,
+} from "./model.js";
 import { DEPS_DIR } from "./paths.js";
 import { RunStore } from "./state.js";
 import {
@@ -34,7 +50,8 @@ import {
   makeWorkflowContext,
   type SdkPrompt,
 } from "./runtime.js";
-import type { RunState, WorkflowMeta } from "./types.js";
+import { schedulePrune } from "./transcript.js";
+import type { ModelParameterValue, RunState, WorkflowMeta } from "./types.js";
 import { attachTui } from "./view-tui.js";
 import { emitCanvas } from "./view-canvas.js";
 import { startViewServer } from "./view-server.js";
@@ -42,7 +59,9 @@ import { startViewServer } from "./view-server.js";
 interface Options {
   file: string;
   args: unknown;
+  /** Catalog id only; effort and speed live in `modelParams`. */
   model: string;
+  modelParams: ModelParameterValue[];
   concurrency: number;
   cap: number;
   fresh: boolean;
@@ -109,12 +128,47 @@ function numberFlag(raw: string | undefined, flag: string, min: number): number 
   return value;
 }
 
+/**
+ * Validates `--param` for shape only. Which ids and values a given model
+ * accepts is the backend's to decide, and checking here would mean a
+ * `Cursor.models.list()` round trip on every run just to read a flag. An
+ * invalid combination surfaces as an agent error at start, which the fan-out
+ * already records and survives.
+ */
+function paramFlag(
+  raw: string | undefined,
+  flag: string,
+  existing: ModelParameterValue[]
+): ModelParameterValue[] {
+  try {
+    return upsertModelParam(existing, parseModelParam(raw ?? ""));
+  } catch (err) {
+    console.error(`${flag} ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(64);
+  }
+}
+
+/** `WORKFLOW_MODEL_PARAMS=effort=high,fast=true`, the env form of `--param`. */
+function paramsFromEnv(): ModelParameterValue[] {
+  const raw = process.env.WORKFLOW_MODEL_PARAMS;
+  if (raw === undefined || raw.trim() === "") return [];
+  try {
+    return parseModelParamList(raw);
+  } catch (err) {
+    console.error(
+      `WORKFLOW_MODEL_PARAMS ${err instanceof Error ? err.message : String(err)}`
+    );
+    process.exit(64);
+  }
+}
+
 function parseArgs(argv: string[]): Options {
   const positional: string[] = [];
   const opts: Options = {
     file: "",
     args: undefined,
     model: process.env.WORKFLOW_MODEL ?? "composer-2.5",
+    modelParams: paramsFromEnv(),
     concurrency: numberFlag(
       process.env.WORKFLOW_CONCURRENCY ?? String(DEFAULT_CONCURRENCY),
       "WORKFLOW_CONCURRENCY",
@@ -148,6 +202,9 @@ function parseArgs(argv: string[]): Options {
         break;
       case "--model":
         opts.model = argv[++i] ?? opts.model;
+        break;
+      case "--param":
+        opts.modelParams = paramFlag(argv[++i], "--param", opts.modelParams);
         break;
       case "--concurrency":
         opts.concurrency = numberFlag(argv[++i], "--concurrency", 1);
@@ -300,6 +357,10 @@ async function main(): Promise<void> {
     process.stdout.write(`auth: ${auth.source} (${auth.detail})\n`);
   }
 
+  // Transcripts are large and accumulate per agent, so retention runs itself
+  // rather than waiting to be asked. A dry run stays side-effect free.
+  if (!opts.dryRun) schedulePrune();
+
   const module = (await import(pathToFileURL(file).href)) as {
     meta?: WorkflowMeta;
     default?: (ctx: ReturnType<typeof makeWorkflowContext>) => Promise<unknown>;
@@ -344,7 +405,7 @@ async function main(): Promise<void> {
     workflow,
     runId,
     cwd: process.cwd(),
-    model: opts.model,
+    model: normalizeModelSelection({ id: opts.model, params: opts.modelParams }),
     concurrency: opts.concurrency,
     agentCap: opts.cap,
     // A dry run must never reuse real results, or it would report cached work

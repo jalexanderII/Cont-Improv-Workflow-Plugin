@@ -324,6 +324,23 @@ export const PAGE = String.raw`<!doctype html>
     color: var(--fg-3);
     font-size: 11px;
   }
+
+  /* ---------- transcript link ---------- */
+
+  .c-view { width: 68px; }
+
+  .view-btn {
+    display: inline-block;
+    font-size: 11px;
+    text-decoration: none;
+    color: var(--fg-2);
+    background: var(--surface-hi);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 2px 8px;
+  }
+  .view-btn:hover { color: var(--fg); border-color: var(--accent); }
+  .view-note { font-size: 11px; color: var(--fg-3); }
 </style>
 </head>
 <body>
@@ -446,12 +463,23 @@ function render(s) {
         gpct + '%"></i></span>' +
         "</div><table><colgroup>" +
         '<col class="c-id"><col class="c-state"><col><col class="c-time"><col class="c-tok">' +
+        '<col class="c-view">' +
         "</colgroup><thead><tr>" +
         '<th class="c-id">#</th><th class="c-state">Status</th><th>Agent</th>' +
-        '<th class="c-time">Time</th><th class="c-tok">Tokens</th>' +
+        '<th class="c-time">Time</th><th class="c-tok">Tokens</th><th class="c-view"></th>' +
         "</tr></thead><tbody>";
 
       g.agents.forEach(function (a) {
+        // A real link, not a button: opening several subagents in their own
+        // tabs is how you compare what they each did, and cmd-click, middle
+        // click, and copy-link all come for free.
+        var view = "";
+        if (a.transcript) {
+          view = '<a class="view-btn" target="_blank" rel="noopener" href="/agent/' +
+            a.id + '">View</a>';
+        } else if (a.transcriptPruned) {
+          view = '<span class="view-note" title="Removed by transcript retention">expired</span>';
+        }
         html +=
           '<tr class="' + (a.status === "pending" ? "is-pending" : "") + '">' +
           '<td class="c-id mono">' + a.id + "</td>" +
@@ -461,6 +489,7 @@ function render(s) {
           "</td>" +
           '<td class="c-time mono">' + agentTime(a) + "</td>" +
           '<td class="c-tok mono">' + tokens(a.tokens) + "</td>" +
+          '<td class="c-view">' + view + "</td>" +
           "</tr>";
       });
 

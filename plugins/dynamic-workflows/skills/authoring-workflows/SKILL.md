@@ -110,6 +110,18 @@ the final canvas, and handed back to the conversation.
 `agent()` options: `label`, `phase`, `model`, `readOnly`, `tools`,
 `disallowedTools`, `cwd`, `cache`.
 
+`model` takes either a catalog id or a full selection. Effort and speed are
+model *parameters*, not part of the id:
+
+```ts
+await agent(prompt, { model: "composer-2.5" });
+await agent(prompt, {
+  model: { id: "grok-4.5", params: [{ id: "effort", value: "high" }] },
+});
+```
+
+Omit `params` to get the model's own default variant.
+
 Prefer `agentJSON` over `agent` whenever the result feeds back into script
 logic. Parsing prose to decide what to do next is where workflows break.
 
@@ -167,10 +179,22 @@ Save the script to the project's `.cursor/workflows/`, then:
 | `--concurrency <n>` | Simultaneous agents, default 16 |
 | `--cap <n>` | Hard ceiling on total agents, default 1000 |
 | `--fresh` | Ignore the resume cache |
-| `--model <id>` | Default model for every agent |
+| `--model <id>` | Catalog model id for every agent |
+| `--param <id=value>` | Model parameter, repeatable: `--param effort=high` |
 | `--no-server` / `--no-canvas` | Skip the live view / final canvas |
 | `--linger <seconds>` | Keep the dashboard up after the run ends |
 | `--json` | Machine-readable summary only |
+
+`--model` takes a **catalog id only**. Effort and speed are separate parameters,
+so Grok at high effort with fast enabled is:
+
+```bash
+wf run <script> --model grok-4.5 --param effort=high --param fast=true
+```
+
+not `--model cursor-grok-4.5-high-fast`, which is a UI slug the backend rejects.
+`WORKFLOW_MODEL` and `WORKFLOW_MODEL_PARAMS` (`effort=high,fast=true`) set the
+same two defaults from the environment.
 
 `--linger` exists because the dashboard is served by the run's own process, so
 it dies the instant the run ends and a page whose last poll landed mid-run
@@ -242,12 +266,76 @@ Proactively suggest this after a successful run of a workflow the user is
 likely to repeat — a review they run on every branch, an audit they run each
 release. Don't save automatically; a one-off task doesn't need a command.
 
+## Reading what a subagent actually did
+
+The progress views show a subagent's status, timing, and a preview of its
+answer. The dashboard also has the whole thing: every agent row that produced a
+transcript gets a **View** link to `/agent/<n>`, a page with that subagent's
+prompt, its reasoning, and each tool call with the arguments it passed and the
+result it got back. Failed tool calls are expanded on arrival; the rest collapse.
+
+Each transcript is its own tab, because comparing subagents is usually the
+point — three verifiers that disagreed, or a worker against the synthesizer that
+consumed it, want to be open side by side. The page is plain server-rendered
+HTML with no JavaScript, so Cmd+S saves a working copy, and `/agent/<n>.json`
+returns the same data for anything scripting against a live run.
+
+This is a local read of the SDK's own agent store — no network and no spend, so
+opening a transcript costs nothing. It is the fastest way to answer "why did
+this agent conclude that?", and a failed agent's transcript is usually the one
+worth reading first.
+
+Two agents have no transcript: a dry-run agent, which never ran, and an agent
+that failed before it started, such as one given a model id the backend rejects.
+Their rows simply have no link.
+
+The dashboard is served by the run's own process, so those links only work while
+it is alive. After it exits, read a transcript from the CLI instead:
+
+```bash
+wf transcript <runId>            # which agents have one
+wf transcript <runId> 3          # write agent #3's page, print the path
+wf transcript <runId> 3 --json   # the same data on stdout
+```
+
+The written page is the same self-contained HTML, saved under the run's own
+directory, so it opens straight from disk with no server involved.
+
+## Retention
+
+Transcripts are large — a single tool-heavy agent can persist tens of megabytes,
+and a fan-out makes dozens at once — so they expire on their own.
+
+| Command | Effect |
+| --- | --- |
+| `wf transcript <runId> [<n>]` | List stored transcripts, or write one out |
+| `wf prune` | Delete transcripts past the TTL |
+| `wf prune --days <n>` | Use a different cutoff for this pass |
+| `wf prune --all` | Delete every stored transcript this runtime created |
+| `wf prune --dry-run` | Report what would go, delete nothing |
+| `wf clean [--days <n>]` | Delete old run directories, pruning their transcripts first |
+
+The default TTL is **7 days**, set with `WORKFLOW_TRANSCRIPT_TTL_DAYS`.
+`WORKFLOW_TRANSCRIPT_TTL_DAYS=off` disables the automatic pass and leaves
+`wf prune` available on demand.
+
+Pruning runs itself at most once a day when a run starts, in the background, and
+never fails a run. Once a transcript is gone its agent row says `expired`, which
+is deliberately distinct from an agent that never had one.
+
+The agent store is shared with everything else that uses the Cursor SDK in the
+same workspace, so pruning only ever removes agents this runtime recorded a run
+id for, and always through the SDK, which keeps its index and the per-agent blob
+directories consistent. Agents created by other tools are never touched.
+
 ## Debugging
 
 - `wf list` — every run, status, agent counts, tokens
 - `wf show <runId>` — full detail including each failed agent's error
 - `wf watch <runId>` — follow a live run
 - `wf stop <runId>` — SIGTERM, so the runner records the stop and flushes state
+- The dashboard's **View** link, or `wf transcript <runId> <n>` once it's gone —
+  a subagent's full prompt, reasoning, and tool calls
 - Raw event log: `~/.cursor/workflows-runtime/runs/<runId>/events.jsonl`
 
 Common failures and what they mean:

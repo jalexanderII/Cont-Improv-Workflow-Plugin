@@ -7,6 +7,8 @@
 export type {
   AgentRecord,
   AgentStatus,
+  ModelParameterValue,
+  ModelSelection,
   WorkflowAgentOptions,
   WorkflowContext,
   WorkflowMeta,

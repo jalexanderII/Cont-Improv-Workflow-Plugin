@@ -12,9 +12,17 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import {
+  formatModelSelection,
+  resolveModelSelection,
+} from "./model.js";
 import { runCacheDir } from "./paths.js";
 import type { RunStore } from "./state.js";
-import type { AgentRecord, WorkflowAgentOptions } from "./types.js";
+import type {
+  AgentRecord,
+  ModelSelection,
+  WorkflowAgentOptions,
+} from "./types.js";
 
 /** Matches the concurrency ceiling Claude Code's workflow runtime applies. */
 export const DEFAULT_CONCURRENCY = 16;
@@ -50,7 +58,8 @@ interface RuntimeContext {
   /** Scopes the result cache, so a fresh run never replays another run's work. */
   runId: string;
   cwd: string;
-  model: string;
+  /** Run-level default; each agent may override the id, the params, or both. */
+  model: ModelSelection;
   /**
    * Undefined means "let the SDK resolve it", which is how a stored
    * `Cursor.auth.login()` gets used. Passing any explicit value, including an
@@ -70,12 +79,14 @@ export type SdkPrompt = (
   message: string,
   options: {
     apiKey?: string;
-    model: { id: string };
+    model: { id: string; params?: Array<{ id: string; value: string }> };
     local: { cwd: string };
     tools?: string[];
     disallowedTools?: string[];
   }
 ) => Promise<{
+  /** SDK run id. The only handle back to the agent's persisted transcript. */
+  id?: string;
   status: string;
   result?: string;
   error?: { message: string };
@@ -138,6 +149,12 @@ interface CacheEntry {
   tokens: number;
   model: string;
   savedAt: number;
+  /**
+   * Carried through the cache so a resumed run's replayed agents still link to
+   * the transcript of the call that actually produced the answer.
+   */
+  runId?: string;
+  cwd?: string;
 }
 
 /**
@@ -148,16 +165,30 @@ interface CacheEntry {
  *
  * Everything that changes what an agent would produce belongs in the hash.
  * The workflow name doesn't, because the cache directory is already per-run.
+ *
+ * Model parameters are part of it: two agents differing only in `effort` or
+ * `fast` are different calls, and sharing a cache entry would make a resume
+ * hand back the cheap answer for the expensive one. The selection arrives
+ * normalized, so parameter order can't split the key either.
  */
 function hashCall(
   prompt: string,
-  model: string,
+  model: ModelSelection,
   cwd: string,
   tools: string[] | undefined,
   disallowed: string[] | undefined
 ): string {
   return createHash("sha256")
-    .update(JSON.stringify([prompt, model, cwd, tools ?? [], disallowed ?? []]))
+    .update(
+      JSON.stringify([
+        prompt,
+        model.id,
+        model.params ?? [],
+        cwd,
+        tools ?? [],
+        disallowed ?? [],
+      ])
+    )
     .digest("hex")
     .slice(0, 16);
 }
@@ -236,16 +267,16 @@ export async function agent(
     );
   }
 
-  const model = options.model ?? c.model;
+  const selection = resolveModelSelection(options, c.model);
   const cwd = options.cwd ?? c.cwd;
   const { tools, disallowedTools } = resolveTools(options);
-  const hash = hashCall(prompt, model, cwd, tools, disallowedTools);
+  const hash = hashCall(prompt, selection, cwd, tools, disallowedTools);
 
   const record = c.store.addAgent({
     label: displayLabel(options.label ?? prompt),
     phase: options.phase ?? phaseContext.getStore() ?? "main",
     hash,
-    model,
+    model: formatModelSelection(selection),
     readOnly: options.readOnly === true,
   });
 
@@ -256,6 +287,8 @@ export async function agent(
       c.store.updateAgent(record, "cached", {
         tokens: hit.tokens,
         preview: hit.result.slice(0, PREVIEW_CHARS),
+        ...(hit.runId !== undefined ? { runId: hit.runId } : {}),
+        ...(hit.cwd !== undefined ? { cwd: hit.cwd } : {}),
       });
       return hit.result;
     }
@@ -266,16 +299,27 @@ export async function agent(
   try {
     const result = await c.prompt(prompt, {
       ...(c.apiKey !== undefined ? { apiKey: c.apiKey } : {}),
-      model: { id: model },
+      // Normalized, so `params` is absent rather than empty when the run and
+      // the agent both left it alone: that's what selects the model's default
+      // variant instead of an explicit empty parameter set.
+      model: selection,
       local: { cwd },
       ...(tools !== undefined ? { tools } : {}),
       ...(disallowedTools !== undefined ? { disallowedTools } : {}),
     });
 
     const tokens = result.usage?.totalTokens ?? 0;
+    // The transcript link is worth keeping on every outcome, and the cwd only
+    // when it isn't the run's, since that is what scopes the local agent store.
+    const transcript = {
+      ...(result.id !== undefined ? { runId: result.id } : {}),
+      ...(cwd !== c.cwd ? { cwd } : {}),
+    };
+
     if (result.status !== "finished" || result.result === undefined) {
       c.store.updateAgent(record, "error", {
         tokens,
+        ...transcript,
         error: result.error?.message ?? `agent ended with status "${result.status}"`,
       });
       return null;
@@ -284,13 +328,15 @@ export async function agent(
     c.store.updateAgent(record, "finished", {
       tokens,
       preview: result.result.slice(0, PREVIEW_CHARS),
+      ...transcript,
     });
     if (cacheable) {
       writeCache(c.runId, hash, {
         result: result.result,
         tokens,
-        model,
+        model: formatModelSelection(selection),
         savedAt: Date.now(),
+        ...transcript,
       });
     }
     return result.result;

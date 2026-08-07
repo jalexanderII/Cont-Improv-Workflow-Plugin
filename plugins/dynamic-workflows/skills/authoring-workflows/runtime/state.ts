@@ -177,3 +177,14 @@ export function readRunState(runId: string): RunState | undefined {
     return undefined;
   }
 }
+
+/**
+ * Rewrites a finished run's snapshot in place. Only retention uses this: a live
+ * run owns its snapshot through `RunStore`, and two writers would race.
+ */
+export function writeRunState(state: RunState): void {
+  writeFileSync(
+    join(runDir(state.runId), "state.json"),
+    JSON.stringify(state, null, 2)
+  );
+}

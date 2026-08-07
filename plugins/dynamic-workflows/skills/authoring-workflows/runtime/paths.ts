@@ -25,11 +25,29 @@ export function runCacheDir(runId: string): string {
   return join(runDir(runId), "cache");
 }
 
+/** Records when transcripts were last pruned, so startup can throttle itself. */
+export const LAST_PRUNE_FILE = join(ROOT, "last-prune");
+
+/** The IDE's per-workspace directory, keyed by path with separators flattened. */
+function projectDirFor(workspacePath: string): string {
+  const slug = resolve(workspacePath).replace(/^\//, "").replace(/\//g, "-");
+  return join(homedir(), ".cursor", "projects", slug);
+}
+
 /**
  * Canvases are only picked up from the IDE's managed directory for the
- * workspace, which is keyed by the workspace path with separators flattened.
+ * workspace.
  */
 export function canvasDirFor(workspacePath: string): string {
-  const slug = resolve(workspacePath).replace(/^\//, "").replace(/\//g, "-");
-  return join(homedir(), ".cursor", "projects", slug, "canvases");
+  return join(projectDirFor(workspacePath), "canvases");
+}
+
+/**
+ * Where the SDK persists local agent transcripts for a workspace. Read-only as
+ * far as this runtime is concerned — it is measured to report reclaimed space,
+ * never edited directly. Deletions go through the SDK so its index and the
+ * per-agent blob directories stay consistent.
+ */
+export function agentStoreDirFor(workspacePath: string): string {
+  return join(projectDirFor(workspacePath), "sdk-agent-store");
 }
