@@ -131,6 +131,10 @@ export interface Transcript {
   /** The prompt this subagent was given, which no progress view records. */
   prompt?: string;
   steps: TranscriptStep[];
+  /** Assembled from a running agent, so it is still growing and truncated. */
+  live?: boolean;
+  /** Steps aged out of the live buffer's cap. */
+  droppedSteps?: number;
 }
 
 function text(message: Record<string, unknown> | undefined): string {
@@ -234,6 +238,114 @@ export async function loadTranscript(runId: string, cwd: string): Promise<Transc
     ...(run.usage?.["totalTokens"] !== undefined ? { tokens: run.usage["totalTokens"] } : {}),
     ...(prompt !== undefined ? { prompt } : {}),
     steps,
+  };
+}
+
+// --- live transcripts -------------------------------------------------------
+
+/**
+ * Steps kept per in-flight agent. Generous for watching progress, bounded so a
+ * wide fan-out of chatty agents can't grow without limit.
+ */
+const LIVE_STEP_CAP = 400;
+
+/**
+ * Tool payloads are truncated harder here than on the finished page. This buffer
+ * lives in the runner's memory for every agent currently running, and a single
+ * repo-wide grep result can be megabytes; the untruncated copy is in the SDK's
+ * store and becomes readable the moment the agent finishes.
+ */
+const LIVE_PAYLOAD_LIMIT = 20_000;
+
+interface LiveEntry {
+  prompt: string;
+  model: string;
+  startedAt: number;
+  steps: TranscriptStep[];
+  /** Steps dropped once the cap was hit, so the page can say so. */
+  dropped: number;
+}
+
+/**
+ * In-memory because the view server runs inside the runner process, so there is
+ * nothing to serialize: a live transcript is only ever read by the dashboard of
+ * the run producing it. Entries are removed when the agent settles, which is
+ * what bounds this to the agents actually in flight.
+ */
+const liveAgents = new Map<number, LiveEntry>();
+
+function truncateDeep(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.length > LIVE_PAYLOAD_LIMIT
+      ? `${value.slice(0, LIVE_PAYLOAD_LIMIT)}\n\n... truncated while running; the finished transcript has all of it`
+      : value;
+  }
+  if (value === null || typeof value !== "object") return value;
+  const serialized = JSON.stringify(value);
+  if (serialized !== undefined && serialized.length <= LIVE_PAYLOAD_LIMIT) return value;
+  return `[${serialized === undefined ? "unserializable" : `${serialized.length} chars`}] omitted while running; the finished transcript has all of it`;
+}
+
+export function startLiveTranscript(
+  agentNumber: number,
+  prompt: string,
+  model: string
+): void {
+  liveAgents.set(agentNumber, {
+    prompt,
+    model,
+    startedAt: Date.now(),
+    steps: [],
+    dropped: 0,
+  });
+}
+
+/** Records one step from the SDK's `onStep` callback. Never throws. */
+export function pushLiveStep(agentNumber: number, step: unknown): void {
+  const entry = liveAgents.get(agentNumber);
+  if (entry === undefined) return;
+  try {
+    const normalized = normalizeStep(step as RawStep);
+    if (normalized.kind === "tool") {
+      normalized.args = truncateDeep(normalized.args);
+      normalized.result = truncateDeep(normalized.result);
+    }
+    entry.steps.push(normalized);
+    if (entry.steps.length > LIVE_STEP_CAP) {
+      entry.steps.shift();
+      entry.dropped += 1;
+    }
+  } catch {
+    // A step shape this runtime doesn't understand must not sink the agent.
+  }
+}
+
+/** Called when the agent settles; the SDK's stored copy takes over from here. */
+export function endLiveTranscript(agentNumber: number): void {
+  liveAgents.delete(agentNumber);
+}
+
+/**
+ * The transcript of an agent that is still running, assembled from `onStep`.
+ *
+ * Read from this rather than the SDK for a live agent on purpose: the store's
+ * `conversation()` tails the run's event stream and does not resolve until the
+ * run reaches a terminal state, so asking it about a running agent would hang
+ * until that agent finished.
+ */
+export function readLiveTranscript(agentNumber: number): Transcript | undefined {
+  const entry = liveAgents.get(agentNumber);
+  if (entry === undefined) return undefined;
+  return {
+    runId: "",
+    agentId: "",
+    status: "running",
+    model: entry.model,
+    durationMs: Date.now() - entry.startedAt,
+    prompt: entry.prompt,
+    steps: entry.steps,
+    live: true,
+    ...(entry.dropped > 0 ? { droppedSteps: entry.dropped } : {}),
   };
 }
 

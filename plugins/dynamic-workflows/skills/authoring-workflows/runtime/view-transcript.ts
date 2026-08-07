@@ -123,6 +123,7 @@ const STYLE = `
   --fg-3: #6e6e78;
   --accent: #6ea8fe;
   --err: #e06c6c;
+  --warn: #d9a441;
 }
 * { box-sizing: border-box; }
 body {
@@ -187,9 +188,45 @@ details.tool pre {
   max-height: 420px;
 }
 .empty { color: var(--fg-3); padding: 24px 0; }
+.live { color: var(--warn); font-weight: 600; }
+.note {
+  color: var(--fg-3);
+  font-size: 11px;
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+  margin-bottom: 16px;
+}
 `;
 
-function document_(title: string, header: string, body: string): string {
+/**
+ * Reloads a live page, keeping your place: pinned to the newest step if you were
+ * already at the bottom, otherwise back where you were reading.
+ *
+ * Emitted only while an agent is running. A finished transcript is static, so it
+ * ships no script at all and works as a saved file.
+ */
+const LIVE_REFRESH_SCRIPT = `
+<script>
+(function () {
+  var key = "wf-transcript-scroll:" + location.pathname;
+  var saved = sessionStorage.getItem(key);
+  if (saved !== null) {
+    window.scrollTo(0, saved === "bottom" ? document.body.scrollHeight : Number(saved));
+  }
+  setTimeout(function () {
+    var atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
+    sessionStorage.setItem(key, atBottom ? "bottom" : String(window.scrollY));
+    location.reload();
+  }, 3000);
+})();
+</script>`;
+
+function document_(
+  title: string,
+  header: string,
+  body: string,
+  options: { live?: boolean } = {}
+): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -200,7 +237,7 @@ function document_(title: string, header: string, body: string): string {
 </head>
 <body>
 <header>${header}</header>
-<main>${body}</main>
+<main>${body}</main>${options.live === true ? LIVE_REFRESH_SCRIPT : ""}
 </body>
 </html>`;
 }
@@ -217,21 +254,38 @@ export function renderTranscriptError(agentNumber: number, message: string): str
 }
 
 export function renderTranscriptPage(data: TranscriptPageData): string {
+  const live = data.live === true;
   const facts = [
     esc(data.phase),
-    esc(data.status),
+    live ? `<b class="live">running</b>` : esc(data.status),
     ...(data.model !== undefined ? [esc(data.model)] : []),
     ...(data.durationMs !== undefined ? [seconds(data.durationMs)] : []),
     ...(data.tokens !== undefined ? [`${tokenCount(data.tokens)} tokens`] : []),
     `${data.steps.length} steps`,
+    ...(live ? ["refreshing every 3s"] : []),
   ];
 
+  const notes = [
+    ...(data.droppedSteps !== undefined
+      ? [
+          `<div class="note">${data.droppedSteps} earlier step${
+            data.droppedSteps === 1 ? "" : "s"
+          } aged out of the live buffer. The finished transcript will have all of them.</div>`,
+        ]
+      : []),
+  ].join("");
+
   const body =
+    notes +
     (data.prompt !== undefined
       ? block("Prompt", "prompt", clamp(data.prompt, PROMPT_LIMIT))
       : "") +
     (data.steps.length === 0
-      ? '<div class="empty">This agent recorded no steps.</div>'
+      ? `<div class="empty">${
+          live
+            ? "This agent is starting up; no steps yet."
+            : "This agent recorded no steps."
+        }</div>`
       : data.steps.map(stepHtml).join(""));
 
   const back =
@@ -240,9 +294,10 @@ export function renderTranscriptPage(data: TranscriptPageData): string {
       : `<span>${esc(data.workflow)}</span>`;
 
   return document_(
-    `#${data.agentNumber} ${esc(data.label)} — ${esc(data.workflow)}`,
+    `${live ? "● " : ""}#${data.agentNumber} ${esc(data.label)} — ${esc(data.workflow)}`,
     `<h1>#${data.agentNumber} ${esc(data.label)}</h1>` +
       `<div class="facts">${facts.map((f) => `<span>${f}</span>`).join("")}${back}</div>`,
-    body
+    body,
+    { live }
   );
 }

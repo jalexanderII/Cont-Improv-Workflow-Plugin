@@ -276,9 +276,21 @@ result it got back. Failed tool calls are expanded on arrival; the rest collapse
 
 Each transcript is its own tab, because comparing subagents is usually the
 point — three verifiers that disagreed, or a worker against the synthesizer that
-consumed it, want to be open side by side. The page is plain server-rendered
-HTML with no JavaScript, so Cmd+S saves a working copy, and `/agent/<n>.json`
-returns the same data for anything scripting against a live run.
+consumed it, want to be open side by side. `/agent/<n>.json` returns the same
+data for anything scripting against a run.
+
+**Agents are readable while they work, not just afterwards.** A running agent's
+page fills in as it goes and refreshes itself every three seconds, staying
+pinned to the newest step if you were already at the bottom. That is the fastest
+way to see a fan-out going wrong — an agent looping on a tool, or reasoning from
+a premise you didn't intend — while there is still time to stop it.
+
+A live page is assembled in the runner's memory as the SDK reports each step, so
+tool payloads are truncated and very long transcripts drop their oldest steps
+(the page says so when that happens). The moment the agent finishes, the page
+switches to the SDK's stored copy, which is complete and untruncated. Only the
+finished page is fully static: it carries no JavaScript at all, so `Cmd+S` saves
+a working copy.
 
 This is a local read of the SDK's own agent store — no network and no spend, so
 opening a transcript costs nothing. It is the fastest way to answer "why did
@@ -300,6 +312,10 @@ wf transcript <runId> 3 --json   # the same data on stdout
 
 The written page is the same self-contained HTML, saved under the run's own
 directory, so it opens straight from disk with no server involved.
+
+`wf transcript` only reads finished agents. A live one exists solely in the
+running process's memory, so it points you at the dashboard instead of blocking
+until the agent ends.
 
 ## Retention
 
