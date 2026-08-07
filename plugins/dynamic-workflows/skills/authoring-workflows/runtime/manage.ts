@@ -1,0 +1,236 @@
+/**
+ * Run management, backing the `/workflows` command.
+ *
+ *   wf list [--json] [--limit <n>]
+ *   wf show <runId> [--json]
+ *   wf watch <runId>
+ *   wf stop <runId>
+ *   wf resume <runId> [extra run.ts flags]
+ *   wf clean [--days <n>]
+ *
+ * Runs are just processes writing to a state directory, so none of this needs
+ * to hook into the editor.
+ */
+
+import { spawn } from "node:child_process";
+import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { DEPS_DIR, RUNS_DIR, runDir } from "./paths.js";
+import { readRunState } from "./state.js";
+import type { RunState } from "./types.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const TSX = join(DEPS_DIR, "node_modules", ".bin", "tsx");
+
+function listRuns(): RunState[] {
+  if (!existsSync(RUNS_DIR)) return [];
+  return readdirSync(RUNS_DIR)
+    .map((id) => readRunState(id))
+    .filter((s): s is RunState => s !== undefined)
+    .sort((a, b) => b.startedAt - a.startedAt);
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A run whose process died without finishing is stale, not running. */
+function effectiveStatus(state: RunState): string {
+  if (state.status === "running" && !isAlive(state.pid)) return "abandoned";
+  return state.status;
+}
+
+function duration(state: RunState): string {
+  const s = Math.round(((state.endedAt ?? Date.now()) - state.startedAt) / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+}
+
+function tokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function printTable(runs: RunState[]): void {
+  if (runs.length === 0) {
+    process.stdout.write("No workflow runs recorded yet.\n");
+    return;
+  }
+  const rows = runs.map((s) => [
+    s.runId,
+    s.workflow.slice(0, 28),
+    effectiveStatus(s),
+    `${s.totals.finished + s.totals.cached}/${s.totals.agents}`,
+    tokens(s.totals.tokens),
+    duration(s),
+  ]);
+  const headers = ["RUN", "WORKFLOW", "STATUS", "AGENTS", "TOKENS", "TIME"];
+  const widths = headers.map((h, i) =>
+    Math.max(h.length, ...rows.map((r) => r[i].length))
+  );
+  const line = (cells: string[]) =>
+    cells.map((c, i) => c.padEnd(widths[i])).join("  ").trimEnd() + "\n";
+
+  process.stdout.write(line(headers));
+  for (const row of rows) process.stdout.write(line(row));
+}
+
+function showRun(runId: string, json: boolean): void {
+  const state = readRunState(runId);
+  if (state === undefined) {
+    process.stderr.write(`unknown run: ${runId}\n`);
+    process.exit(66);
+  }
+  if (json) {
+    process.stdout.write(JSON.stringify(state, null, 2) + "\n");
+    return;
+  }
+
+  process.stdout.write(`${state.workflow}  ${state.runId}\n`);
+  process.stdout.write(`status     ${effectiveStatus(state)}  (${duration(state)})\n`);
+  process.stdout.write(`workspace  ${state.cwd}\n`);
+  process.stdout.write(`script     ${state.file}\n`);
+  process.stdout.write(
+    `agents     ${state.totals.agents} total, ${state.totals.finished} done, ` +
+      `${state.totals.cached} cached, ${state.totals.errored} failed\n`
+  );
+  process.stdout.write(`tokens     ${tokens(state.totals.tokens)}\n`);
+  if (state.viewUrl !== undefined) process.stdout.write(`live view  ${state.viewUrl}\n`);
+  if (state.canvasPath !== undefined) process.stdout.write(`canvas     ${state.canvasPath}\n`);
+  process.stdout.write(`state      ${runDir(state.runId)}\n`);
+
+  const failures = state.agents.filter(
+    (a) => a.status === "error" || a.status === "cancelled"
+  );
+  if (failures.length > 0) {
+    process.stdout.write(`\nfailed agents:\n`);
+    for (const f of failures) {
+      process.stdout.write(`  #${f.id} ${f.label}\n      ${f.error ?? "unknown"}\n`);
+    }
+  }
+}
+
+async function watchRun(runId: string): Promise<void> {
+  let lastSerialized = "";
+  for (;;) {
+    const state = readRunState(runId);
+    if (state === undefined) {
+      process.stderr.write(`unknown run: ${runId}\n`);
+      process.exit(66);
+    }
+    const serialized = JSON.stringify(state.totals) + state.status;
+    if (serialized !== lastSerialized) {
+      lastSerialized = serialized;
+      const t = state.totals;
+      process.stdout.write(
+        `[${duration(state)}] ${effectiveStatus(state)}  ` +
+          `${t.finished + t.cached}/${t.agents} agents  ` +
+          `${t.running} running  ${t.errored} failed  ${tokens(t.tokens)} tokens\n`
+      );
+    }
+    if (effectiveStatus(state) !== "running") return;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+function stopRun(runId: string): void {
+  const state = readRunState(runId);
+  if (state === undefined) {
+    process.stderr.write(`unknown run: ${runId}\n`);
+    process.exit(66);
+  }
+  if (!isAlive(state.pid)) {
+    process.stdout.write(`run ${runId} is not active\n`);
+    return;
+  }
+  // SIGTERM so the runner records the stop and flushes its state first.
+  process.kill(state.pid, "SIGTERM");
+  process.stdout.write(`sent SIGTERM to ${runId} (pid ${state.pid})\n`);
+}
+
+function resumeRun(runId: string, extra: string[]): void {
+  const state = readRunState(runId);
+  if (state === undefined) {
+    process.stderr.write(`unknown run: ${runId}\n`);
+    process.exit(66);
+  }
+  // Relaunch under the *same* run id. The result cache lives in the run's own
+  // directory, so continuing in place is what lets completed agents come back
+  // from cache while everything unfinished runs again. A new id would start
+  // with an empty cache and redo the whole thing.
+  const argv = state.argv.filter((a) => a !== "--fresh");
+  const withoutRunId = argv.filter(
+    (a, i) => a !== "--run-id" && argv[i - 1] !== "--run-id"
+  );
+  // The bootstrapped tsx, not npx: a resume must not depend on the project's
+  // toolchain or on npx resolving a package that was never installed there.
+  const child = spawn(
+    TSX,
+    [join(HERE, "run.ts"), ...withoutRunId, "--run-id", runId, ...extra],
+    { cwd: state.cwd, stdio: "inherit" }
+  );
+  child.on("exit", (code) => process.exit(code ?? 0));
+}
+
+function clean(days: number): void {
+  if (!existsSync(RUNS_DIR)) return;
+  const cutoff = Date.now() - days * 86_400_000;
+  let removed = 0;
+  for (const id of readdirSync(RUNS_DIR)) {
+    const dir = join(RUNS_DIR, id);
+    const state = readRunState(id);
+    if (state !== undefined && effectiveStatus(state) === "running") continue;
+    if (statSync(dir).mtimeMs < cutoff) {
+      rmSync(dir, { recursive: true, force: true });
+      removed += 1;
+    }
+  }
+  process.stdout.write(`removed ${removed} run directories older than ${days}d\n`);
+}
+
+async function main(): Promise<void> {
+  const [command, ...rest] = process.argv.slice(2);
+  const json = rest.includes("--json");
+  const positional = rest.filter((a) => !a.startsWith("--"));
+
+  switch (command) {
+    case "list":
+    case undefined: {
+      const limitFlag = rest.indexOf("--limit");
+      const limit = limitFlag === -1 ? 20 : Number(rest[limitFlag + 1]);
+      const runs = listRuns().slice(0, limit);
+      if (json) process.stdout.write(JSON.stringify(runs, null, 2) + "\n");
+      else printTable(runs);
+      return;
+    }
+    case "show":
+      showRun(positional[0], json);
+      return;
+    case "watch":
+      await watchRun(positional[0]);
+      return;
+    case "stop":
+      stopRun(positional[0]);
+      return;
+    case "resume":
+      resumeRun(positional[0], rest.slice(rest.indexOf(positional[0]) + 1));
+      return;
+    case "clean": {
+      const daysFlag = rest.indexOf("--days");
+      clean(daysFlag === -1 ? 14 : Number(rest[daysFlag + 1]));
+      return;
+    }
+    default:
+      process.stderr.write(`unknown command: ${command}\n`);
+      process.exit(64);
+  }
+}
+
+void main();

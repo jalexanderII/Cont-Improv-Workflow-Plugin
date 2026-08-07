@@ -1,0 +1,69 @@
+---
+description: >-
+  Safety and cost rules for launching dynamic workflows — read-only defaults,
+  writer isolation, launch confirmation, and spend control. Applies whenever a
+  workflow is being written, launched, resumed, or debugged, or when a task is
+  being fanned out across many subagents.
+alwaysApply: false
+---
+
+# Workflow safety
+
+A workflow multiplies whatever it does by the number of agents it spawns. That
+applies to its mistakes as much as its work.
+
+## Confirm before launching
+
+Never start a real run without showing the user the phase plan, the projected
+agent count, and which phases can write. Wait for them to agree.
+
+Cursor has no per-run approval card, so this confirmation and the launch-gate
+hook are the only things between a mistaken argument and hundreds of agents. A
+dry run (`--dry-run`) needs no confirmation — it spawns nothing.
+
+## Never leave a run invisible
+
+A background run the user cannot see is a black box, and they should not have to
+ask for a way in. Whenever you launch one, in that same message: paste the
+"How to watch this run" block that `wf tmux` prints, and open the dashboard URL
+with the `cursor-app-control` tool `open_resource`.
+
+Do not run `tmux attach` from your own shell. The agent shell is `TERM=dumb` and
+tmux refuses to attach to a non-TTY; the attach command is for the user's
+terminal. `tmux capture-pane -pt <session>` is the one that works for you.
+
+## Read-only by default
+
+Mark every phase `readOnly: true` unless it genuinely must write. Discovery,
+audit, review, verification, research, and synthesis never need to write.
+
+When a phase does write, keep it to one clearly identified phase, and give
+concurrent writers separate working directories (git worktrees). Agents sharing
+a working copy will overwrite each other's edits, and the failure is silent.
+
+## Terminate
+
+Every loop needs both a round cap and a stall detector: stop when consecutive
+rounds stop making progress, not just when the round budget runs out. Leave the
+runtime's agent cap in place; it exists to bound a runaway script.
+
+## Spend
+
+- `CURSOR_API_KEY` usage is billed separately from the IDE session. Say so
+  before the first run rather than after.
+- Dry-run every new script. It's free and catches most errors.
+- Run against one directory before the whole repo.
+- Route cheap phases to a smaller model instead of running everything on the
+  session default.
+- Stopping is cheap: completed agents stay cached, and resume re-runs only
+  unfinished work. Recommend stopping when a run is spending more than expected.
+
+## Report honestly
+
+- An agent that could not verify a claim has produced an unknown, not a
+  refutation. Report unverified claims separately; never fold them into the
+  confirmed findings and never silently drop them.
+- Report failed agents in the totals. A run that says "12 findings" while eight
+  agents errored is misleading.
+- Never present a workflow's output as more certain than its verification pass
+  supports.

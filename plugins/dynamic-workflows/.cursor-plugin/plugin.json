@@ -1,0 +1,20 @@
+{
+  "name": "dynamic-workflows",
+  "displayName": "Dynamic Workflows",
+  "version": "1.0.0",
+  "description": "Orchestrate many Cursor subagents from a script the agent writes and you can rerun. Ships an SDK-backed workflow runtime with live progress views, an in-session subagent fan-out mode, and a run management surface. Use for codebase-wide audits, large migrations, fix-until-green loops, and cross-checked research.",
+  "author": {
+    "name": "Joel"
+  },
+  "license": "MIT",
+  "keywords": [
+    "workflows",
+    "orchestration",
+    "subagents",
+    "fan-out",
+    "audit",
+    "migration",
+    "research",
+    "cursor-sdk"
+  ]
+}

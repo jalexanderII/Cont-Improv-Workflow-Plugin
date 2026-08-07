@@ -6,8 +6,8 @@
 		"email": "hi@cursor.com"
 	},
 	"metadata": {
-		"description": "A focused Cursor marketplace for production-quality coding conventions, pre-push review, and parallel delivery planning.",
-		"version": "1.0.0",
+		"description": "A focused Cursor marketplace for production-quality coding conventions, pre-push review, parallel delivery planning, and multi-agent workflow orchestration.",
+		"version": "1.1.0",
 		"pluginRoot": "plugins"
 	},
 	"plugins": [
@@ -15,6 +15,11 @@
 			"name": "cont-improv-workflow",
 			"source": "cont-improv-workflow",
 			"description": "Continuous improvement workflow: coding conventions, production-quality pre-push review, and parallel delivery planning"
+		},
+		{
+			"name": "dynamic-workflows",
+			"source": "dynamic-workflows",
+			"description": "Dynamic workflows: orchestrate dozens to hundreds of Cursor subagents from a rerunnable TypeScript script, with live progress views, an in-session fan-out mode, and run management"
 		}
 	]
 }
