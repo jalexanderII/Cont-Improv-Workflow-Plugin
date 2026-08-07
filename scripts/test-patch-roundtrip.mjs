@@ -182,71 +182,52 @@ async function testNonUtf8(scratch) {
 }
 
 /**
- * Rebuilds the pre-image a unified diff expects, from the diff alone: the
- * context and removed lines are already in it, and everything outside a hunk is
- * filler git never looks at. Lets a real captured patch be a fixture without
- * also committing the source file it came from.
+ * The exact shape that made this bug so confusing to diagnose.
+ *
+ * A unified diff encodes a blank context line as a single space, so the last
+ * line of this patch is `" "`. `.trim()` therefore removes three bytes —
+ * `"\n"`, `" "`, `"\n"` — deleting a whole context line rather than just a line
+ * terminator. The final hunk is then one line shorter than its header declares,
+ * which is why git reports a corrupt patch pointing at the hunk instead of
+ * complaining about a missing newline.
  */
-function materializePreImage(patchText) {
-  const files = new Map();
-  let lines = null;
-  let oldLine = 0;
-
-  for (const line of patchText.split("\n")) {
-    const header = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-    if (header) {
-      lines = [];
-      files.set(header[1], lines);
-      continue;
-    }
-    const hunk = /^@@ -(\d+)(?:,\d+)? \+/.exec(line);
-    if (hunk) {
-      oldLine = Number(hunk[1]);
-      continue;
-    }
-    if (lines === null || oldLine === 0) continue;
-
-    if (line.startsWith(" ") || line.startsWith("-")) {
-      while (lines.length < oldLine - 1) lines.push(`filler ${lines.length + 1}`);
-      lines[oldLine - 1] = line.slice(1);
-      oldLine += 1;
-    }
-  }
-
-  return new Map([...files].map(([file, body]) => [file, `${body.join("\n")}\n`]));
-}
-
-/**
- * The 877-byte patch from production run 20260807212954-5c5f0feb, task C-3.
- * Its final line is a blank context line — a single space — so `.trim()` eats
- * the whole line, not just a newline, and the hunk comes up one line short.
- */
-async function testRealCapturedPatch(scratch) {
-  const fixture = path.join(repoRoot, "scripts", "fixtures", "route-handlers-c3.raw.diff");
-  const raw = await fs.readFile(fixture);
-  ok(raw.at(-1) === 0x0a, "the committed fixture must keep its trailing newline");
-
+async function testBlankContextTail(scratch) {
   const repo = path.join(scratch, "repo");
-  await fs.mkdir(repo, { recursive: true });
+  const worktree = path.join(scratch, "worktree");
   git(scratch, "init", "-q", repo);
   git(repo, "config", "user.email", "test@example.com");
   git(repo, "config", "user.name", "patch-roundtrip-test");
-  for (const [file, content] of materializePreImage(raw.toString("utf8"))) {
-    await fs.mkdir(path.join(repo, path.dirname(file)), { recursive: true });
-    writeFileSync(path.join(repo, file), content);
-  }
+
+  // Four lines then a blank one: editing the second puts the blank line last in
+  // the hunk's trailing context, where trimming can reach it.
+  writeFileSync(path.join(repo, "handler.ts"), "one\ntwo\nthree\nfour\n\n");
   git(repo, "add", "-A");
-  git(repo, "commit", "-qm", "pre-image");
+  git(repo, "commit", "-qm", "init");
+  git(repo, "worktree", "add", "--detach", "-q", worktree, "HEAD");
 
-  const rawResult = applyCheck(repo, raw, scratch, "real-raw");
-  ok(rawResult.code === 0, `real captured patch must apply, got rc ${rawResult.code} ${rawResult.stderr}`);
+  writeFileSync(path.join(worktree, "handler.ts"), "one\nTWO\nthree\nfour\n\n");
+  const raw = capturePatch(worktree);
 
-  const trimmed = applyCheck(repo, raw.toString("utf8").trim(), scratch, "real-trimmed");
-  ok(trimmed.code === 128, `trimming the real patch must fail with rc 128, got ${trimmed.code}`);
-  // The line production reported for this patch.
+  const lines = raw.toString("utf8").split("\n");
   ok(
-    corruptPatchLine(trimmed.stderr) === 29,
-    `expected a corrupt patch at line 29, got: ${trimmed.stderr}`
+    lines.at(-2) === " ",
+    `the fixture must end in a blank context line, got ${JSON.stringify(lines.at(-2))}`
+  );
+
+  const trimmed = Buffer.from(raw.toString("utf8").trim(), "utf8");
+  ok(
+    raw.length - trimmed.length === 3,
+    `trimming must eat the blank context line (3 bytes), lost ${raw.length - trimmed.length}`
+  );
+
+  const rawResult = applyCheck(repo, raw, scratch, "tail-raw");
+  ok(rawResult.code === 0, `raw patch must apply, got rc ${rawResult.code} ${rawResult.stderr}`);
+
+  const trimmedResult = applyCheck(repo, trimmed, scratch, "tail-trimmed");
+  ok(trimmedResult.code === 128, `trimmed patch must fail with rc 128, got ${trimmedResult.code}`);
+  ok(
+    corruptPatchLine(trimmedResult.stderr) !== null,
+    `trimming must produce a corrupt-patch error, got: ${trimmedResult.stderr}`
   );
 }
 
@@ -304,7 +285,7 @@ try {
   for (const [name, run] of [
     ["roundtrip", testRoundTrip],
     ["nonutf8", testNonUtf8],
-    ["real", testRealCapturedPatch],
+    ["blank-context-tail", testBlankContextTail],
   ]) {
     const dir = path.join(scratch, name);
     await fs.mkdir(dir);
