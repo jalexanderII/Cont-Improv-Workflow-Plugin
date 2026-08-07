@@ -6,10 +6,16 @@
  *   wf watch <runId>
  *   wf stop <runId>
  *   wf resume <runId> [extra run.ts flags]
+ *   wf prune [--days <n>] [--all] [--dry-run]
  *   wf clean [--days <n>]
  *
  * Runs are just processes writing to a state directory, so none of this needs
  * to hook into the editor.
+ *
+ * `prune` removes subagent transcripts, which are megabytes each and live in
+ * the SDK's store; `clean` removes this runtime's own run directories, which
+ * are kilobytes. Different lifetimes, so they are separate commands — but
+ * `clean` prunes first, so deleting a run never orphans its transcripts.
  */
 
 import { spawn } from "node:child_process";
@@ -19,6 +25,13 @@ import { fileURLToPath } from "node:url";
 
 import { DEPS_DIR, RUNS_DIR, runDir } from "./paths.js";
 import { readRunState } from "./state.js";
+import {
+  configuredTtlDays,
+  DEFAULT_TTL_DAYS,
+  formatBytes,
+  pruneTranscripts,
+  type PruneSummary,
+} from "./transcript.js";
 import type { RunState } from "./types.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -179,8 +192,33 @@ function resumeRun(runId: string, extra: string[]): void {
   child.on("exit", (code) => process.exit(code ?? 0));
 }
 
-function clean(days: number): void {
+function reportPrune(summary: PruneSummary, scope: string): void {
+  if (summary.dryRun) {
+    process.stdout.write(
+      `would remove ${summary.deleted} transcripts across ${summary.runsTouched} runs (${scope})\n`
+    );
+    return;
+  }
+  const missing = summary.missing > 0 ? `, ${summary.missing} already gone` : "";
+  process.stdout.write(
+    `removed ${summary.deleted} transcripts${missing} across ${summary.runsTouched} runs ` +
+      `(${scope}), reclaiming ${formatBytes(summary.bytesReclaimed)}\n`
+  );
+}
+
+async function prune(days: number | "all", dryRun: boolean): Promise<void> {
+  const summary = await pruneTranscripts({ days, dryRun });
+  reportPrune(summary, days === "all" ? "all ages" : `older than ${days}d`);
+}
+
+async function clean(days: number): Promise<void> {
   if (!existsSync(RUNS_DIR)) return;
+
+  // Transcripts are addressed by ids that only exist in these run states, so
+  // they have to go first or deleting the directory strands them in the SDK
+  // store with nothing left pointing at them.
+  reportPrune(await pruneTranscripts({ days }), `older than ${days}d`);
+
   const cutoff = Date.now() - days * 86_400_000;
   let removed = 0;
   for (const id of readdirSync(RUNS_DIR)) {
@@ -222,9 +260,27 @@ async function main(): Promise<void> {
     case "resume":
       resumeRun(positional[0], rest.slice(rest.indexOf(positional[0]) + 1));
       return;
+    case "prune": {
+      const daysFlag = rest.indexOf("--days");
+      const configured = configuredTtlDays();
+      // `off` only disables the automatic pass; asking for a prune explicitly
+      // still needs a cutoff, so fall back to the default.
+      const fallback = configured === "off" ? DEFAULT_TTL_DAYS : configured;
+      const days = rest.includes("--all")
+        ? ("all" as const)
+        : daysFlag === -1
+          ? fallback
+          : Number(rest[daysFlag + 1]);
+      if (days !== "all" && (!Number.isFinite(days) || days < 0)) {
+        process.stderr.write(`--days must be a non-negative number\n`);
+        process.exit(64);
+      }
+      await prune(days, rest.includes("--dry-run"));
+      return;
+    }
     case "clean": {
       const daysFlag = rest.indexOf("--days");
-      clean(daysFlag === -1 ? 14 : Number(rest[daysFlag + 1]));
+      await clean(daysFlag === -1 ? 14 : Number(rest[daysFlag + 1]));
       return;
     }
     default:
