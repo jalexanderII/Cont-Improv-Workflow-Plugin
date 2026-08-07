@@ -44,6 +44,17 @@ function applyCheck(repo, bytes, scratch, label) {
   }
 }
 
+/**
+ * The line a `corrupt patch` error names, or null if that isn't the error.
+ * Git worded this `at line N` and later `at <file>:N`, so match the shape
+ * rather than the sentence.
+ */
+function corruptPatchLine(stderr) {
+  if (!/corrupt patch\b/.test(stderr)) return null;
+  const line = /(\d+)\s*$/.exec(stderr);
+  return line === null ? null : Number(line[1]);
+}
+
 function capturePatch(cwd) {
   git(cwd, "add", "-A");
   return execFileSync("git", ["diff", "--binary", "--cached", "HEAD"], {
@@ -124,16 +135,16 @@ async function testRoundTrip(scratch) {
     trimmed.code !== 0,
     "a trimmed patch must be rejected; if git ever accepts one this test has stopped proving anything"
   );
-  const corruptAt = /corrupt patch at line (\d+)/.exec(trimmed.stderr);
+  const corruptAt = corruptPatchLine(trimmed.stderr);
   ok(
     corruptAt !== null,
-    `expected "corrupt patch at line N" from the trimmed patch, got: ${trimmed.stderr || "(no stderr)"}`
+    `expected a "corrupt patch" error from the trimmed patch, got: ${trimmed.stderr || "(no stderr)"}`
   );
   // As in production: the reported line is deep in the patch, nowhere near the
   // capture that actually broke it, which is why this was misread as a conflict.
   ok(
-    corruptAt === null || Number(corruptAt[1]) > 1000,
-    `expected the failure deep in a large patch, got line ${corruptAt?.[1]}`
+    corruptAt === null || corruptAt > 1000,
+    `expected the failure deep in a large patch, got line ${corruptAt}`
   );
 
   // Restoring only the trailing newline makes it apply again, so nothing else
@@ -232,9 +243,10 @@ async function testRealCapturedPatch(scratch) {
 
   const trimmed = applyCheck(repo, raw.toString("utf8").trim(), scratch, "real-trimmed");
   ok(trimmed.code === 128, `trimming the real patch must fail with rc 128, got ${trimmed.code}`);
+  // The line production reported for this patch.
   ok(
-    trimmed.stderr === "error: corrupt patch at line 29",
-    `expected the production error "error: corrupt patch at line 29", got: ${trimmed.stderr}`
+    corruptPatchLine(trimmed.stderr) === 29,
+    `expected a corrupt patch at line 29, got: ${trimmed.stderr}`
   );
 }
 
