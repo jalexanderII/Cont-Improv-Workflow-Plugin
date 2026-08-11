@@ -11,15 +11,18 @@ In this repository, the plugin lives at **`plugins/cont-improv-workflow/`**. The
 | Path | Purpose |
 | --- | --- |
 | `.cursor-plugin/plugin.json` | Manifest: `name` **cont-improv-workflow**, `displayName` **Continuous Improvement Workflow** |
-| `rules/coding-conventions.mdc` | Always-on engineering conventions for production-ready implementation, review, testing judgment, architecture, and collaboration |
-| `agents/pre-push-reviewer.md` | Final review agent for correctness, maintainability, security, performance, accessibility, and edge cases before pushing |
-| `skills/parallel-delivery-planning/` | Planning skill for splitting work into independent batches with dependency ordering and ownership hints |
+| `rules/coding-conventions.mdc` | Always-on conventions: implementation, subagent delegation, the review loop, the continuous-improvement gate, testing judgment, collaboration |
+| `agents/pre-push-reviewer.md` | Final review agent for correctness, maintainability, security, performance, accessibility, and edge cases |
+| `skills/parallel-delivery-planning/` | Splitting work into independent batches with dependency ordering and ownership hints |
 
 ## How to use it
 
-- Keep `rules/coding-conventions.mdc` installed as an always-applied rule so implementation and review share the same quality bar.
-- Use `parallel-delivery-planning` when work needs to be split across multiple people or agents.
-- Use `pre-push-reviewer` after implementation and checks, especially before pushing or opening a PR.
+- Keep `rules/coding-conventions.mdc` installed as an always-applied rule so implementation and review share one quality bar.
+- Use `parallel-delivery-planning` when work spans multiple people or agents.
+- Use `pre-push-reviewer` after implementation and checks, before pushing or opening a PR.
+- Add a project rule naming your verification command; the conventions do not assume one.
+
+The rule's last two sections are gates: **Review before finishing** loops the reviewer under one review ID until clean, and **Continuous improvement** requires the final response to end with a `Continuous improvement:` line, the learning already written to a skill or convention doc.
 
 ## Install (local)
 
